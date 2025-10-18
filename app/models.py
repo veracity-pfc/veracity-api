@@ -1,5 +1,5 @@
-from sqlalchemy import String, Enum, Text, TIMESTAMP, func, ForeignKey, JSON
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import String, Text, TIMESTAMP, func, ForeignKey, JSON, CHAR, Integer
+from sqlalchemy.dialects.postgresql import UUID, ENUM as PGEnum
 from sqlalchemy.orm import Mapped, mapped_column
 import enum
 import uuid
@@ -34,18 +34,30 @@ class RiskLabel(str, enum.Enum):
 
 class User(Base):
     __tablename__ = "users"
+
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.user, nullable=False)
-    status: Mapped[UserStatus] = mapped_column(Enum(UserStatus), default=UserStatus.active, nullable=False)
+
+    role: Mapped[UserRole] = mapped_column(
+        PGEnum(UserRole, name="user_role", create_type=False),
+        nullable=False,
+        default=UserRole.user,
+    )
+    status: Mapped[UserStatus] = mapped_column(
+        PGEnum(UserStatus, name="user_status", create_type=False),
+        nullable=False,
+        default=UserStatus.active,
+    )
+
     accepted_terms_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
+
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     occurred_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     user_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
@@ -57,10 +69,24 @@ class AuditLog(Base):
 
 class Analysis(Base):
     __tablename__ = "analyses"
+
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    analysis_type: Mapped[AnalysisType] = mapped_column(Enum(AnalysisType), nullable=False)
-    status: Mapped[AnalysisStatus] = mapped_column(Enum(AnalysisStatus), default=AnalysisStatus.pending, nullable=False)
-    label: Mapped[RiskLabel] = mapped_column(Enum(RiskLabel), default=RiskLabel.unknown, nullable=False)
+
+    analysis_type: Mapped[AnalysisType] = mapped_column(
+        PGEnum(AnalysisType, name="analysis_type", create_type=False),
+        nullable=False,
+    )
+    status: Mapped[AnalysisStatus] = mapped_column(
+        PGEnum(AnalysisStatus, name="analysis_status", create_type=False),
+        nullable=False,
+        default=AnalysisStatus.pending,
+    )
+    label: Mapped[RiskLabel] = mapped_column(
+        PGEnum(RiskLabel, name="risk_label", create_type=False),
+        nullable=False,
+        default=RiskLabel.unknown,
+    )
+
     user_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     actor_ip_hash: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
@@ -88,4 +114,16 @@ class AIResponse(Base):
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+class PendingRegistration(Base):
+    __tablename__ = "pending_registrations"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    code: Mapped[str] = mapped_column(CHAR(6), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    last_sent_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
