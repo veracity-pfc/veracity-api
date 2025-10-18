@@ -13,8 +13,6 @@ from app.services.emails import send_email, verification_email_html, EmailError
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-_email_re = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
 def sanitize_text(s: str) -> str:
     s = (s or "").strip()
     s = re.sub(r"[\u0000-\u001F<>]", "", s)
@@ -103,70 +101,65 @@ async def register(
     session: AsyncSession = Depends(get_session),
 ):
     name = sanitize_text(data.name)[:30]
-    email_raw = sanitize_text(data.email)[:30]
-    email = email_raw.lower()
+    email = sanitize_text(data.email).lower()[:255]
 
-    if not email or not _email_re.match(email):
-        raise HTTPException(status_code=422, detail="O e-mail digitado não é válido. Tente novamente.")
-    err = validate_password_policy(data.password)
-    if err:
-        raise HTTPException(status_code=422, detail=err)
-    if data.password != data.confirm_password:
-        raise HTTPException(status_code=422, detail="A senha deve ser igual nos dois campos")
+    if not data.accepted_terms:
+        raise HTTPException(
+            status_code=400,
+            detail="É necessário aceitar os Termos de Uso e a Política de Privacidade."
+        )
 
-    exists = await session.execute(select(User.id).where(func.lower(User.email) == email))
-    if exists.scalar_one_or_none():
+    dup_user = await session.execute(select(User.id).where(func.lower(User.email) == email))
+    if dup_user.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="E-mail já cadastrado.")
 
-    await session.execute(delete(PendingRegistration).where(func.lower(PendingRegistration.email) == email))
+    pwd_hash = hash_password(data.password)
+    code = f"{__import__('random').randint(0, 999999):06d}"
+    expires = datetime.now(timezone.utc) + timedelta(minutes=10)
 
-    code = six_digit_code()
-    expiry_minutes = 10
+    accepted_at = datetime.now(timezone.utc)
+
     pending = PendingRegistration(
-        email=email,
         name=name,
-        password_hash=hash_password(data.password),
+        email=email,
+        password_hash=pwd_hash,
         code=code,
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=expiry_minutes),
+        expires_at=expires,
+        accepted_terms_at=accepted_at,  
     )
     session.add(pending)
     await session.flush()  
 
-    actor_hash = ip_hash_from_request(request)
+    await send_email(
+            to=email,
+            subject="Verificação de e-mail - Veracity",
+            html_body=verification_email_html(pending.name, code),
+    )
+
     await session.execute(
         insert(AuditLog).values(
-            user_id=None,
-            actor_ip_hash=actor_hash,
+            actor_ip_hash=ip_hash_from_request(request),
             action="auth.register",
             resource="/auth/register",
             success=True,
-            details={  
+            details={
                 "email": email,
                 "registration_id": str(pending.id),
+                "accepted_terms": True,
+                "accepted_terms_at": accepted_at.isoformat(),
             },
         )
     )
     await session.commit()
-
-    try:
-        await send_email(
-            to=email,
-            subject="Verificação de e-mail - Veracity",
-            html_body=verification_email_html(name, code),
-        )
-    except EmailError:
-        raise HTTPException(status_code=502, detail="Não foi possível enviar o e-mail de verificação. Tente reenviar o código.")
-
     return OkOut()
 
-@router.post("/verify-email", response_model=OkOut)
+@router.post("/verify-email", response_model=TokenOut)
 async def verify_email(
     data: VerifyEmailIn,
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
-    email = sanitize_text(data.email)[:30].lower()
-    code = data.code
+    email = sanitize_text(data.email).lower()
 
     result = await session.execute(
         select(PendingRegistration).where(func.lower(PendingRegistration.email) == email)
@@ -181,7 +174,7 @@ async def verify_email(
         await session.commit()
         raise HTTPException(status_code=410, detail="Código expirado. Inicie o cadastro novamente.")
 
-    if pending.attempts >= 5 or pending.code != code:
+    if pending.attempts >= 5 or pending.code != data.code:
         await session.execute(
             update(PendingRegistration)
             .where(PendingRegistration.id == pending.id)
@@ -196,10 +189,10 @@ async def verify_email(
         password_hash=pending.password_hash,
         role=UserRole.user,
         status=UserStatus.active,
-        accepted_terms_at=now,
+        accepted_terms_at=pending.accepted_terms_at or now, 
     )
     session.add(user)
-    await session.flush()  
+    await session.flush()
 
     res = await session.execute(
         update(AuditLog)
@@ -210,9 +203,7 @@ async def verify_email(
         )
         .values(user_id=user.id)
     )
-    updated_rows = res.rowcount or 0
-
-    if updated_rows == 0:
+    if (res.rowcount or 0) == 0:
         await session.execute(
             update(AuditLog)
             .where(
@@ -225,20 +216,33 @@ async def verify_email(
 
     await session.execute(delete(PendingRegistration).where(PendingRegistration.id == pending.id))
 
-    actor_hash = ip_hash_from_request(request)
     await session.execute(
         insert(AuditLog).values(
             user_id=str(user.id),
-            actor_ip_hash=actor_hash,
+            actor_ip_hash=ip_hash_from_request(request),
             action="auth.verify_email",
             resource="/auth/verify-email",
             success=True,
-            details={"email": email, "registration_id": str(pending.id)},
+            details={"email": email},
+        )
+    )
+
+    token = create_access_token({"sub": str(user.id), "role": user.role.value})
+    
+    await session.execute(
+        insert(AuditLog).values(
+            user_id=str(user.id),
+            actor_ip_hash=ip_hash_from_request(request),
+            action="auth.auto_login",
+            resource="/auth/verify-email",
+            success=True,
+            details={"email": email},
         )
     )
 
     await session.commit()
-    return OkOut()
+    return TokenOut(access_token=token, role=user.role)
+
 
 @router.post("/resend-code", response_model=OkOut)
 async def resend_code(
