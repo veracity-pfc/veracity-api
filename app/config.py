@@ -15,9 +15,9 @@ class Settings(BaseSettings):
     gsb_api_key: str = Field(..., alias="GSB_API_KEY")
     ipqs_key: str = Field(..., alias="IPQS_API_KEY")
 
-    anon_link_limit: int = 2
+    anon_url_limit: int = 2
     anon_image_limit: int = 1
-    user_link_limit: int = 5
+    user_url_limit: int = 5
     user_image_limit: int = 3
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

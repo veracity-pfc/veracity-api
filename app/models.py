@@ -1,5 +1,5 @@
-from sqlalchemy import String, Text, TIMESTAMP, func, ForeignKey, JSON, CHAR, Integer
-from sqlalchemy.dialects.postgresql import UUID, ENUM as PGEnum
+from sqlalchemy import String, Text, TIMESTAMP, func, ForeignKey, JSON
+from sqlalchemy.dialects.postgresql import UUID, JSONB, ENUM as PGEnum
 from sqlalchemy.orm import Mapped, mapped_column
 import enum
 import uuid
@@ -17,7 +17,7 @@ class UserStatus(str, enum.Enum):
     inactive = "inactive"
 
 class AnalysisType(str, enum.Enum):
-    link = "link"
+    url = "url"
     image = "image"
 
 class AnalysisStatus(str, enum.Enum):
@@ -94,13 +94,20 @@ class Analysis(Base):
     ai_response_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-class LinkAnalysis(Base):
-    __tablename__ = "link_analyses"
-    analysis_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("analyses.id", ondelete="CASCADE"), primary_key=True)
-    url: Mapped[str] = mapped_column(Text, nullable=False)
-    gsb_verdict: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON)
-    ipqs_verdict: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON)
-    reason: Mapped[Optional[str]] = mapped_column(Text)
+class UrlAnalysis(Base):
+    __tablename__ = "url_analyses"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    actor_ip_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    url_original: Mapped[str] = mapped_column(String(2048), nullable=False)
+    url_normalized: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    tld_ok: Mapped[bool] = mapped_column(nullable=False, default=False)
+    dns_ok: Mapped[bool] = mapped_column(nullable=False, default=False)
+    ipqs_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    gsb_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    ai_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    risk_label: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
 class ImageAnalysis(Base):
     __tablename__ = "image_analyses"

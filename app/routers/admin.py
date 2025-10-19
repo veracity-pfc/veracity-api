@@ -11,7 +11,7 @@ async def metrics(_: str = Depends(require_admin), session: AsyncSession = Depen
     sql = text("""
       SELECT
         COUNT(*) FILTER (WHERE date_trunc('month', created_at)=date_trunc('month', now())) AS total_month,
-        COUNT(*) FILTER (WHERE analysis_type='link'  AND date_trunc('month', created_at)=date_trunc('month', now())) AS links_month,
+        COUNT(*) FILTER (WHERE analysis_type='url'  AND date_trunc('month', created_at)=date_trunc('month', now())) AS urls_month,
         COUNT(*) FILTER (WHERE analysis_type='image' AND date_trunc('month', created_at)=date_trunc('month', now())) AS images_month
       FROM analyses
     """)
@@ -20,6 +20,6 @@ async def metrics(_: str = Depends(require_admin), session: AsyncSession = Depen
     return {
         "reference_month": datetime.utcnow().strftime("%Y-%m"),
         "total_month": row[0] or 0,
-        "links_month": row[1] or 0,
+        "urls_month": row[1] or 0,
         "images_month": row[2] or 0,
     }
