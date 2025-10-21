@@ -1,7 +1,7 @@
 from __future__ import annotations
 import html
 import httpx
-from ..config import settings
+from ..core.config import settings
 
 RESEND_API = "https://api.resend.com/emails"
 

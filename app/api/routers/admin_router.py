@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from datetime import datetime
-from ..deps import require_admin, get_db
+from app.api.deps import require_admin
+from app.core.database import get_session as get_db
 
 router = APIRouter(prefix="/administration", tags=["admin"])
 

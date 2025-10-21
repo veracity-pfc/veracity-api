@@ -4,10 +4,11 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from sqlalchemy import text
 import asyncio
-from .database import engine
-from .routers import auth, users, admin, analysis
-from .security import pwd_context  
-from bcrypt import checkpw, hashpw, gensalt 
+
+from app.core.database import engine
+from app.api.routers import auth_router, users_router, admin_router
+from app.core.security import pwd_context
+from bcrypt import checkpw, hashpw, gensalt
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -31,14 +32,16 @@ async def lifespan(app: FastAPI):
                     await conn.execute(text("SELECT 1"))
             except Exception:
                 pass
-            await asyncio.sleep(300)  
+            await asyncio.sleep(300)
 
     task = asyncio.create_task(keepalive())
 
-    yield  
+    yield
 
-    keep_running = False
-    task.cancel()
+    try:
+        task.cancel()
+    except Exception:
+        pass
     try:
         await engine.dispose()
     except Exception:
@@ -58,10 +61,9 @@ app.add_middleware(
 async def unhandled_ex_handler(_: Request, __: Exception):
     return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
-app.include_router(auth.router)
-app.include_router(users.router)
-app.include_router(admin.router)
-app.include_router(analysis.router)
+app.include_router(auth_router.router)
+app.include_router(users_router.router)
+app.include_router(admin_router.router)
 
 @app.get("/health")
 def health():
