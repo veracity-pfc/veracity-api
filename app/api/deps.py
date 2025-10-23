@@ -4,7 +4,6 @@ from jose import jwt, JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from hashlib import sha256
-
 from app.core.config import settings
 from app.core.database import get_session
 from app.domain.user_model import User, UserStatus, UserRole

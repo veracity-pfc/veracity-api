@@ -46,7 +46,18 @@ def verification_email_html(name: str, code: str) -> str:
   </body>
 </html>
     """.strip()
-    
+
+def build_contact_email_html(email: str, subject: str, message: str) -> str:
+    return (
+        "<!doctype html><html><body style='font-family:Arial,sans-serif'>"
+        f"<h2>Nova mensagem recebida - {subject}</h2>"
+        f"<p><b>De:</b> {email}</p>"
+        "<hr>"
+        f"<pre style='white-space:pre-wrap;font-size:14px;line-height:1.5'>"
+        f"{message}"
+        "</pre>"
+        "</body></html>"
+    )
 
 def reset_password_email_html(name: str, link: str) -> str:
     name = html.escape(name or "")

@@ -2,7 +2,7 @@ from sqlalchemy import Text, TIMESTAMP, func, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, ENUM as PGEnum, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 import uuid
 
 from app.core.database import Base
