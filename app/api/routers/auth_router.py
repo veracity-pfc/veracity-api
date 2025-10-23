@@ -4,9 +4,9 @@ from app.core.database import get_session
 from app.schemas.auth import LogIn, TokenOut, RegisterIn, VerifyEmailIn
 from app.schemas.common import OkOut
 from jose import jwt
+from app.schemas.auth import ForgotPasswordIn, ResetPasswordIn
 from app.core.config import settings
 from app.services.auth_service import AuthService
-from app.domain.user_model import UserRole 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -51,3 +51,23 @@ async def resend_code(data: VerifyEmailIn, request: Request, session: AsyncSessi
         return OkOut()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
+
+@router.post("/forgot-password", response_model=OkOut)
+async def forgot_password(data: ForgotPasswordIn, request: Request, session: AsyncSession = Depends(get_session)):
+    svc = AuthService(session)
+    try:
+        await svc.forgot_password(data.email, request)
+        return OkOut()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/reset-password/{token}", response_model=OkOut)
+async def reset_password(token: str, data: ResetPasswordIn, request: Request, session: AsyncSession = Depends(get_session)):
+    svc = AuthService(session)
+    try:
+        await svc.reset_password(token, data.password, data.confirm_password, request)
+        return OkOut()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+

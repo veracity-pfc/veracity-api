@@ -3,14 +3,15 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, func
 from typing import Optional
-
+from app.core.config import settings
 from app.core.security import verify_password, create_access_token, hash_password
 from app.domain.enums import UserStatus, UserRole
+from app.domain.password_reset import PasswordReset
 from app.domain.user_model import User
 from app.domain.pending_registration_model import PendingRegistration
 from app.domain.audit_model import AuditLog
 from app.api.deps import ip_hash_from_request
-from app.services.emails import send_email, verification_email_html, EmailError
+from app.services.email_service import reset_password_email_html, send_email, verification_email_html, EmailError
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -233,3 +234,81 @@ class AuthService:
             )
         except EmailError:
             raise ValueError("Falha ao reenviar e-mail. Tente novamente em instantes.")
+        
+    async def forgot_password(self, email: str, request) -> None:
+        email = (email or "").strip().lower()
+        q = await self.session.execute(select(User).where(User.email == email))
+        user = q.scalar_one_or_none()
+        if not user:
+            raise ValueError("E-mail não encontrado.")
+
+        now = datetime.now(timezone.utc)
+        token = PasswordReset(
+            user_id=user.id,
+            expires_at=now + timedelta(minutes=30),
+            actor_ip_hash=ip_hash_from_request(request),
+        )
+        self.session.add(token)
+        await self.session.flush()
+
+        base = getattr(settings, "frontend_url", None)
+        link = f"{base}/reset-password/{token.id}"
+
+        await send_email(
+            to=user.email,
+            subject="Redefinir sua senha - Veracity",
+            html_body=reset_password_email_html(user.name, link),
+        )
+
+        await self.session.execute(
+            AuditLog.__table__.insert().values(
+                user_id=user.id,
+                actor_ip_hash=ip_hash_from_request(request),
+                action="auth.forgot_password",
+                resource="/auth/forgot-password",
+                success=True,
+                details={"email": email, "token_id": str(token.id)},
+            )
+        )
+        await self.session.commit()
+
+    async def reset_password(self, token_id: str, password: str, confirm_password: str, request) -> None:
+        if password != confirm_password:
+            raise ValueError("A senha deve ser igual nos dois campos.")
+
+        err = validate_password_policy(password)
+        if err:
+            raise ValueError(err)
+
+        q = await self.session.execute(select(PasswordReset).where(PasswordReset.id == token_id))
+        token = q.scalar_one_or_none()
+        now = datetime.now(timezone.utc)
+        if not token or token.used_at is not None or token.expires_at < now:
+            raise ValueError("Link inválido ou expirado.")
+
+        q2 = await self.session.execute(select(User).where(User.id == token.user_id))
+        user = q2.scalar_one_or_none()
+        if not user:
+            raise ValueError("Usuário não encontrado.")
+
+        if verify_password(password, user.password_hash):
+            raise ValueError("A nova senha deve ser diferente da senha atual.")
+
+        await self.session.execute(
+            update(User).where(User.id == user.id).values(password_hash=hash_password(password))
+        )
+        await self.session.execute(
+            update(PasswordReset).where(PasswordReset.id == token.id).values(used_at=now)
+        )
+
+        await self.session.execute(
+            AuditLog.__table__.insert().values(
+                user_id=user.id,
+                actor_ip_hash=ip_hash_from_request(request),
+                action="auth.reset_password",
+                resource=f"/auth/reset-password/{token_id}",
+                success=True,
+            )
+        )
+        await self.session.commit()
+

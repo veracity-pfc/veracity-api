@@ -12,4 +12,5 @@ from app.domain.pending_registration_model import PendingRegistration
 __all__ = [
     "UserRole", "UserStatus", "AnalysisType", "AnalysisStatus", "RiskLabel",
     "User", "AuditLog", "Analysis", "UrlAnalysis", "AIResponse", "PendingRegistration",
+    "PasswordReset"
 ]

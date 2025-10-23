@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     resend_from: Optional[str] = Field(default=None, alias="RESEND_FROM")
     access_token_expire_min: int = Field(default=60, alias="ACCESS_TOKEN_EXPIRE_MIN")
 
+    frontend_url: str = Field(..., alias="FRONTEND_URL")
     salt_ip_hash: str = Field(..., alias="SALT_IP_HASH")
 
     gsb_api_key: str = Field(..., alias="GSB_API_KEY")
