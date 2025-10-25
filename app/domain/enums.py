@@ -21,5 +21,4 @@ class RiskLabel(str, Enum):
     safe = "safe"
     suspicious = "suspicious"
     malicious = "malicious"
-    fake = "fake"
     unknown = "unknown"

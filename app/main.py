@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from sqlalchemy import text
 import asyncio
 from app.core.database import engine
-from app.api.routers import auth_router, users_router, admin_router, contact_router
+from app.api.routers import auth_router, users_router, admin_router, contact_router, analysis_router
 from app.core.security import pwd_context
 from bcrypt import checkpw, hashpw, gensalt
 
@@ -64,6 +64,7 @@ app.include_router(auth_router.router)
 app.include_router(users_router.router)
 app.include_router(admin_router.router)
 app.include_router(contact_router.router)
+app.include_router(analysis_router.router)
 
 @app.get("/health")
 def health():

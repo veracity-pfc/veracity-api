@@ -25,14 +25,15 @@ class Analysis(Base):
 class UrlAnalysis(Base):
     __tablename__ = "url_analyses"
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    analysis_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("analyses.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     actor_ip_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
-    url_original: Mapped[str] = mapped_column(Text, nullable=False)
-    url_normalized: Mapped[str] = mapped_column(Text, nullable=False, index=True)
-    tld_ok: Mapped[bool] = mapped_column(nullable=False, default=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
     dns_ok: Mapped[bool] = mapped_column(nullable=False, default=False)
-    ipqs_json: Mapped[Dict | None] = mapped_column(JSONB, nullable=True)
     gsb_json: Mapped[Dict | None] = mapped_column(JSONB, nullable=True)
     ai_json: Mapped[Dict | None] = mapped_column(JSONB, nullable=True)
     risk_label: Mapped[str | None] = mapped_column(Text, nullable=True)
