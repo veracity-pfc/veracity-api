@@ -4,6 +4,7 @@ from jose import jwt, JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from hashlib import sha256
+
 from app.core.config import settings
 from app.core.database import get_session
 from app.domain.user_model import User, UserStatus, UserRole
@@ -21,6 +22,7 @@ def ip_hash_from_request(req: Request) -> str | None:
     return sha256(value.encode()).hexdigest()
 
 async def get_current_user(
+    request: Request,
     token: str = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_db),
 ):
@@ -41,7 +43,38 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if not user or user.status != UserStatus.active:
         raise cred_exc
+
+    try:
+        request.state.user = user
+        request.state.user_id = str(user.id)
+    except Exception:
+        pass
+
     return user
+
+oauth2_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+
+async def get_optional_user(
+    request: Request,
+    token: str | None = Depends(oauth2_optional),
+    session: AsyncSession = Depends(get_db),
+) -> User | None:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_alg])
+        uid: str | None = payload.get("sub")
+        if not uid:
+            return None
+        result = await session.execute(select(User).where(User.id == uid))
+        user = result.scalar_one_or_none()
+        if not user or user.status != UserStatus.active:
+            return None
+        request.state.user = user
+        request.state.user_id = str(user.id)
+        return user
+    except Exception:
+        return None
 
 async def require_admin(user: User = Depends(get_current_user)):
     if user.role != UserRole.admin:

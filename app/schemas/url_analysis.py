@@ -1,7 +1,9 @@
+from typing import List, Optional
 from pydantic import BaseModel, field_validator
 from urllib.parse import urlsplit
 import re
 from app.domain.enums import RiskLabel
+from app.schemas.common import QuotaOut
 
 _TLD_RE = re.compile(r"^[A-Za-z]{2,24}$")
 
@@ -33,5 +35,6 @@ class UrlAnalysisOut(BaseModel):
     analysis_id: str
     url: str
     explanation: str
-    recommendations: list[str]
+    recommendations: List[str]
     label: RiskLabel
+    quota: Optional[QuotaOut] = None

@@ -1,6 +1,8 @@
 from __future__ import annotations
+from typing import Optional
 from pydantic import BaseModel, field_validator
 from app.domain.enums import RiskLabel
+from app.schemas.common import QuotaOut  
 
 ALLOWED = {"image/png", "image/jpeg", "image/jpg"}
 
@@ -30,3 +32,4 @@ class ImageAnalysisOut(BaseModel):
     label: RiskLabel
     explanation: str
     recommendations: list[str]
+    quota: Optional[QuotaOut] = None  

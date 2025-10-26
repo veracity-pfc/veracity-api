@@ -18,6 +18,7 @@ from app.services.ai_service import AIService
 logger = logging.getLogger("veracity.image_analysis")
 ALLOWED_MIMES = {"image/png", "image/jpeg"}
 
+
 def _detect_mime(data: bytes) -> str | None:
     kind = filetype.guess(data)
     return (kind and kind.mime) or None
@@ -60,26 +61,65 @@ def _pt_label(label: RiskLabel) -> str:
         RiskLabel.unknown: "Desconhecido",
     }[label]
 
+
+def _resolve_user_id(request, explicit_user_id: Optional[str]) -> Optional[str]:
+    if explicit_user_id:
+        return explicit_user_id
+    try:
+        st = getattr(request, "state", None)
+        cand = None
+        if st is not None:
+            u = getattr(st, "user", None)
+            if hasattr(u, "id") and u.id:
+                cand = u.id
+            if not cand:
+                cand = getattr(st, "user_id", None)
+        if not cand:
+            u2 = getattr(request, "user", None)
+            if hasattr(u2, "id") and u2.id:
+                cand = u2.id
+            elif isinstance(u2, str) and u2:
+                cand = u2
+        if cand:
+            return str(cand)
+    except Exception:
+        pass
+    return None
+
+
+async def _count_today(session: AsyncSession, analysis_type: AnalysisType, *, user_id: Optional[str], actor_hash: Optional[str]) -> int:
+    now = datetime.now(timezone.utc)
+    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    q = select(func.count(Analysis.id)).where(
+        Analysis.analysis_type == analysis_type,
+        Analysis.created_at >= start,
+    )
+    if user_id:
+        q = q.where(Analysis.user_id == user_id)
+    else:
+        q = q.where(Analysis.user_id.is_(None), Analysis.actor_ip_hash == actor_hash)
+    return (await session.execute(q)).scalar_one()
+
+async def _check_daily_limit(session: AsyncSession, analysis_type: AnalysisType, *, user_id: Optional[str], actor_hash: Optional[str]) -> Tuple[int, int, str]:
+    """
+    Retorna (used_today, limit, scope). Lança erro se excedido.
+    """
+    if getattr(settings, "disable_limits", False):
+        return (0, 0, "disabled")
+    used = await _count_today(session, analysis_type, user_id=user_id, actor_hash=actor_hash)
+    if user_id:
+        limit = settings.user_image_limit if analysis_type == AnalysisType.image else settings.user_url_limit
+        scope = "user"
+    else:
+        limit = settings.anon_image_limit if analysis_type == AnalysisType.image else settings.anon_url_limit
+        scope = "anon"
+    if used >= limit:
+        raise ValueError("Limite diário de análises de imagem atingido.")
+    return (used, limit, scope)
+
 class ImageAnalysisService:
     def __init__(self, session: AsyncSession):
         self.session = session
-
-    async def _check_daily_limit(self, user_id: Optional[str], actor_hash: Optional[str]) -> None:
-        if getattr(settings, "disable_limits", False):
-            return
-        now = datetime.now(timezone.utc)
-        start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-        q = select(func.count(Analysis.id)).where(
-            Analysis.analysis_type == AnalysisType.image,
-            Analysis.created_at >= start,
-        )
-        if user_id:
-            q = q.where(Analysis.user_id == user_id); limit = settings.user_image_limit
-        else:
-            q = q.where(Analysis.user_id.is_(None), Analysis.actor_ip_hash == actor_hash); limit = settings.anon_image_limit
-        total = (await self.session.execute(q)).scalar_one()
-        if total >= limit:
-            raise ValueError("Limite diário de análises de imagem atingido.")
 
     async def _sightengine_check(self, img_bytes: bytes, filename: str) -> Dict[str, Any]:
         models = (
@@ -118,13 +158,17 @@ class ImageAnalysisService:
             raise ValueError("Conteúdo não reconhecido como PNG ou JPEG válido.")
 
         actor_hash = ip_hash_from_request(request)
-        await self._check_daily_limit(user_id, actor_hash)
+        resolved_user_id = _resolve_user_id(request, user_id)
+
+        used_today, limit, scope = await _check_daily_limit(
+            self.session, AnalysisType.image, user_id=resolved_user_id, actor_hash=actor_hash
+        )
 
         analysis = Analysis(
             analysis_type=AnalysisType.image,
             status=AnalysisStatus.pending,
             label=RiskLabel.unknown,
-            user_id=user_id,
+            user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
         )
         self.session.add(analysis)
@@ -132,15 +176,16 @@ class ImageAnalysisService:
 
         await AuditRepository(self.session).insert(
             table=__import__("app.domain.audit_model", fromlist=["AuditLog"]).AuditLog,
-            user_id=user_id,
+            user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
             action="analysis.image.create",
             resource=str(analysis.id),
             success=True,
-            details={"filename": filename, "content_type": content_type, "size": len(upload_bytes)},
+            details={"filename": filename, "content_type": content_type, "size": len(upload_bytes), "quota_used": used_today, "quota_limit": limit, "quota_scope": scope},
         )
 
         se_json = await self._sightengine_check(upload_bytes, filename)
+
         ai_generated = _extract_ai_generated(se_json)
         label_enum, type_hint = _decide(ai_generated)
 
@@ -148,24 +193,24 @@ class ImageAnalysisService:
             "type_hint": type_hint,
             "ai_generated_score": ai_generated,
             "decision": label_enum.value,
-            "notes": "Classificação baseada somente em type.ai_generated do Sightengine.",
+            "notes": "Classificação baseada somente em type/genai.ai_generated do Sightengine.",
         }
 
         ai = AIService()
         ai_text = await ai.generate_for_image(
             filename=filename,
             mime=content_type,
-            detection_json=se_json,  
+            detection_json=se_json,
         )
 
         img_row = ImageAnalysis(
             analysis_id=analysis.id,
-            user_id=user_id,
+            user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
             meta={"filename": filename, "size": len(upload_bytes), "mime": content_type},
-            sightengine_json=se_json,      
-            risk_label=label_enum.value,    
-            ai_json=tech_meta,           
+            sightengine_json=se_json,
+            risk_label=label_enum.value,
+            ai_json=tech_meta,
         )
         self.session.add(img_row)
 
@@ -185,7 +230,7 @@ class ImageAnalysisService:
 
         await AuditRepository(self.session).insert(
             table=__import__("app.domain.audit_model", fromlist=["AuditLog"]).AuditLog,
-            user_id=user_id,
+            user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
             action="analysis.image.finish",
             resource=str(analysis.id),
@@ -195,10 +240,19 @@ class ImageAnalysisService:
 
         await self.session.commit()
 
+        used_after = used_today + 1
+        remaining = max(0, (limit - used_after)) if limit else 0
+
         return analysis, img_row, {
-            "classification": _pt_label(label_enum),      
-            "label": label_enum.value,                   
+            "classification": _pt_label(label_enum),
+            "label": label_enum.value,
             "explanation": ai_text.get("explanation", ""),
             "recommendations": ai_text.get("recommendations", []),
             "score_ai_generated": round(ai_generated, 3),
+            "quota": {
+                "scope": scope,                
+                "limit": limit,
+                "used_today": used_after,
+                "remaining_today": remaining,
+            },
         }
