@@ -1,7 +1,9 @@
 from __future__ import annotations
-import httpx, json, logging
-from typing import Any, Dict, Optional, Literal
+import logging
+from typing import Any, Dict, Optional, Tuple
 from datetime import datetime, timezone
+import httpx
+import filetype
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.config import settings
@@ -12,65 +14,51 @@ from app.domain.analysis_model import Analysis
 from app.domain.image_analysis_model import ImageAnalysis
 from app.domain.ai_model import AIResponse
 from app.services.ai_service import AIService
-import filetype
 
 logger = logging.getLogger("veracity.image_analysis")
+ALLOWED_MIMES = {"image/png", "image/jpeg"}
 
-ALLOWED_MIMES = {"image/png", "image/jpeg"} 
-MODEL_DEEPFAKE = "prithivMLmods/Deep-Fake-Detector-v2-Model"
-MODEL_VIT      = "google/vit-base-patch16-224"
-
-
-def detect_image_mime(data: bytes) -> str | None:
+def _detect_mime(data: bytes) -> str | None:
     kind = filetype.guess(data)
-    return kind.mime if kind else None
+    return (kind and kind.mime) or None
 
-def _pt_to_enum(s: str) -> RiskLabel:
-    s = (s or "").strip().lower()
-    if s.startswith("fals"): return RiskLabel.fake       
-    if s.startswith("segur"): return RiskLabel.safe
-    if s.startswith("suspe"): return RiskLabel.suspicious
-    if s.startswith("malic"): return RiskLabel.malicious
-    return RiskLabel.unknown
-
-
-async def _hf_image_classify(model: str, img_bytes: bytes, client: httpx.AsyncClient) -> Dict[str, Any]:
-    headers = {
-        "Authorization": f"Bearer {getattr(settings, 'hf_token', '')}",
-        "Accept": "application/json",
-        "Content-Type": "application/octet-stream",
-    }
-    url = f"https://router.huggingface.co/hf-inference/models/{model}"
-    r = await client.post(url, headers=headers, content=img_bytes, timeout=getattr(settings, "http_timeout", 30))
-    logger.info("hf.inf", extra={"model": model, "status": r.status_code, "preview": r.text[:180].replace("\n"," ")})
-    if r.status_code >= 400:
-        try:
-            return {"error": {"status": r.status_code, "text": r.text}}
-        except Exception:
-            return {"error": {"status": r.status_code}}
+def _extract_ai_generated(se: Dict[str, Any]) -> float:
+    candidates = []
     try:
-        return r.json()
+        if isinstance(se, dict):
+            t = se.get("type") or {}
+            candidates.append(t.get("ai_generated"))
+            candidates.append(t.get("ai-generated"))
+            candidates.append((se.get("genai") or {}).get("ai_generated"))
+            candidates.append(se.get("ai_generated"))
     except Exception:
-        return {}
+        pass
+    for v in candidates:
+        try:
+            if v is None:
+                continue
+            x = float(v)
+            if x < 0: x = 0.0
+            if x > 1: x = 1.0
+            return x
+        except Exception:
+            continue
+    return 0.0
 
+def _decide(ai_gen: float) -> Tuple[RiskLabel, str]:
+    if ai_gen >= 0.90:
+        return RiskLabel.fake, "ai_generated"
+    if ai_gen >= 0.60:
+        return RiskLabel.suspicious, "ai_generated"
+    return RiskLabel.safe, "real"
 
-def _risk_from_models(deepfake_json: Dict[str, Any]) -> RiskLabel:
-    probs = []
-    if isinstance(deepfake_json, list):
-        for it in deepfake_json:
-            lbl = str(it.get("label", "")).lower()
-            scr = float(it.get("score", 0) or 0)
-            probs.append((lbl, scr))
-    elif isinstance(deepfake_json, dict):
-        for lbl, scr in deepfake_json.items():
-            try:
-                probs.append((str(lbl).lower(), float(scr)))
-            except Exception:
-                pass
-
-    fake_p = max((scr for (lbl, scr) in probs if "fake" in lbl), default=0.0)
-    return RiskLabel.fake if fake_p >= 0.60 else RiskLabel.safe
-
+def _pt_label(label: RiskLabel) -> str:
+    return {
+        RiskLabel.safe: "Seguro",
+        RiskLabel.suspicious: "Suspeito",
+        RiskLabel.fake: "Falso",
+        RiskLabel.unknown: "Desconhecido",
+    }[label]
 
 class ImageAnalysisService:
     def __init__(self, session: AsyncSession):
@@ -89,28 +77,46 @@ class ImageAnalysisService:
             q = q.where(Analysis.user_id == user_id); limit = settings.user_image_limit
         else:
             q = q.where(Analysis.user_id.is_(None), Analysis.actor_ip_hash == actor_hash); limit = settings.anon_image_limit
-
         total = (await self.session.execute(q)).scalar_one()
         if total >= limit:
             raise ValueError("Limite diário de análises de imagem atingido.")
 
-    async def analyze(self, *, upload_bytes: bytes, filename: str, content_type: str, request, user_id: Optional[str]):
-        
-        if len(upload_bytes) == 0:
+    async def _sightengine_check(self, img_bytes: bytes, filename: str) -> Dict[str, Any]:
+        models = (
+            "properties,type,quality,"
+            "faces,scam,text-content,face-attributes,text,genai"
+        )
+        data = {
+            "models": models,
+            "api_user": getattr(settings, "sight_engine_api_user"),
+            "api_secret": getattr(settings, "sight_engine_api_secret"),
+        }
+        files = {"media": (filename, img_bytes, "application/octet-stream")}
+        async with httpx.AsyncClient(timeout=settings.http_timeout) as client:
+            r = await client.post("https://api.sightengine.com/1.0/check.json", data=data, files=files)
+            try:
+                return r.json()
+            except Exception:
+                return {"status": "failure", "error": {"code": r.status_code, "text": r.text}}
+
+    async def analyze(
+        self,
+        *,
+        upload_bytes: bytes,
+        filename: str,
+        content_type: str,
+        request,
+        user_id: Optional[str],
+    ):
+        if not upload_bytes:
             raise ValueError("Arquivo vazio.")
         if len(upload_bytes) > 1_000_000:
             raise ValueError("A imagem não pode ultrapassar 1MB.")
         if content_type not in {"image/png", "image/jpeg", "image/jpg"}:
             raise ValueError("Formato inválido. Aceitos: png, jpeg ou jpg.")
-
-        mime = detect_image_mime(upload_bytes)
-        
-        if mime not in ALLOWED_MIMES:
+        if (_detect_mime(upload_bytes) or "") not in ALLOWED_MIMES:
             raise ValueError("Conteúdo não reconhecido como PNG ou JPEG válido.")
 
-        if content_type not in {"image/png", "image/jpeg", "image/jpg"}:
-            raise ValueError("Formato inválido. Aceitos: png, jpeg ou jpg.")
- 
         actor_hash = ip_hash_from_request(request)
         await self._check_daily_limit(user_id, actor_hash)
 
@@ -134,38 +140,40 @@ class ImageAnalysisService:
             details={"filename": filename, "content_type": content_type, "size": len(upload_bytes)},
         )
 
-        timeout = httpx.Timeout(getattr(settings, "http_timeout", 30))
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            deepfake_json = await _hf_image_classify(MODEL_DEEPFAKE, upload_bytes, client)
-            vit_json      = await _hf_image_classify(MODEL_VIT, upload_bytes, client)
+        se_json = await self._sightengine_check(upload_bytes, filename)
+        ai_generated = _extract_ai_generated(se_json)
+        label_enum, type_hint = _decide(ai_generated)
 
-            ai_service = AIService(client)
-            ai_json = await ai_service.generate_for_image(
-                filename=filename,
-                mime=content_type,
-                deepfake_json=deepfake_json or {},
-                vit_json=vit_json or {},
-            )
+        tech_meta = {
+            "type_hint": type_hint,
+            "ai_generated_score": ai_generated,
+            "decision": label_enum.value,
+            "notes": "Classificação baseada somente em type.ai_generated do Sightengine.",
+        }
 
-        label_enum = _pt_to_enum(ai_json.get("classification", "")) or _risk_from_models(deepfake_json)
+        ai = AIService()
+        ai_text = await ai.generate_for_image(
+            filename=filename,
+            mime=content_type,
+            detection_json=se_json,  
+        )
 
         img_row = ImageAnalysis(
             analysis_id=analysis.id,
             user_id=user_id,
             actor_ip_hash=actor_hash,
             meta={"filename": filename, "size": len(upload_bytes), "mime": content_type},
-            deepfake_json=deepfake_json,
-            vit_json=vit_json,
-            ai_json=ai_json,
-            risk_label=label_enum.value,
+            sightengine_json=se_json,      
+            risk_label=label_enum.value,    
+            ai_json=tech_meta,           
         )
         self.session.add(img_row)
 
         ai_resp = AIResponse(
             analysis_id=analysis.id,
-            provider="hf-inference",
-            model=f"{MODEL_DEEPFAKE} + {MODEL_VIT}",
-            content=json.dumps(ai_json, ensure_ascii=False),
+            provider="openai",
+            model=getattr(settings, "hf_openai_model", None) or "gpt-4o-mini",
+            content=ai_text.get("explanation", ""),
         )
         self.session.add(ai_resp)
         await self.session.flush()
@@ -182,8 +190,15 @@ class ImageAnalysisService:
             action="analysis.image.finish",
             resource=str(analysis.id),
             success=True,
-            details={"label": label_enum.value},
+            details={"label": label_enum.value, "ai_generated": ai_generated, "type_hint": type_hint},
         )
 
         await self.session.commit()
-        return analysis, img_row, ai_json
+
+        return analysis, img_row, {
+            "classification": _pt_label(label_enum),      
+            "label": label_enum.value,                   
+            "explanation": ai_text.get("explanation", ""),
+            "recommendations": ai_text.get("recommendations", []),
+            "score_ai_generated": round(ai_generated, 3),
+        }

@@ -14,6 +14,7 @@ from app.domain.enums import AnalysisType, AnalysisStatus, RiskLabel
 from app.api.deps import ip_hash_from_request
 from app.repositories.audit_repo import AuditRepository
 from app.services.ai_service import AIService
+from app.schemas.url_analysis import has_valid_tld
 
 logger = logging.getLogger("veracity.link_analysis")
 DNS_TIMEOUT = 1.2
@@ -115,7 +116,6 @@ class UrlAnalysisService:
 
         host = only_host(url_in)
         _dns_ok = await dns_ok(host)
-        from app.schemas.url_analysis import has_valid_tld
         _tld_ok = has_valid_tld(host)
 
         timeout = httpx.Timeout(settings.http_timeout)
@@ -147,7 +147,7 @@ class UrlAnalysisService:
         ai_resp = AIResponse(
             analysis_id=analysis.id,
             provider="hf-router",
-            model=settings.hf_model,
+            model=settings.hf_openai_model,
             content=json.dumps(ai_json, ensure_ascii=False),
         )
         self.session.add(ai_resp)

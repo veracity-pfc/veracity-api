@@ -20,9 +20,7 @@ class ImageAnalysis(Base):
     actor_ip_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     meta: Mapped[Dict | None] = mapped_column(JSONB, nullable=True)
-    deepfake_json: Mapped[Dict | None] = mapped_column(JSONB, nullable=True)
-    vit_json: Mapped[Dict | None] = mapped_column(JSONB, nullable=True)
+    sightengine_json: Mapped[Dict | None] = mapped_column(JSONB, nullable=True)
     ai_json: Mapped[Dict | None] = mapped_column(JSONB, nullable=True)
     risk_label: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True),
-                                                 server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)

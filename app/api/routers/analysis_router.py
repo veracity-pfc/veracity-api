@@ -4,7 +4,7 @@ from app.api.deps import get_db
 from app.schemas.url_analysis import UrlAnalysisIn, UrlAnalysisOut
 from app.services.url_analysis_service import UrlAnalysisService
 from app.domain.enums import RiskLabel
-from app.schemas.imgae_analysis import ImageIn, ImageAnalysisOut
+from app.schemas.image_analysis import ImageIn, ImageAnalysisOut
 from app.services.image_analysis_service import ImageAnalysisService
 
 

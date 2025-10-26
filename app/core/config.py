@@ -17,8 +17,11 @@ class Settings(BaseSettings):
     gsb_api_key: str = Field(..., alias="GSB_API_KEY")
 
     hf_token: str = Field(..., alias="HF_TOKEN")
-    hf_model: str = Field(default="openai/gpt-oss-20b", alias="HF_MODEL")
-    hf_base_url: str = Field(default="https://router.huggingface.co/v1", alias="HF_BASE_URL")
+    hf_openai_model: str = Field(..., alias="HF_OPENAI_MODEL")
+    hf_base_url: str = Field(..., alias="HF_BASE_URL")
+    
+    sight_engine_api_user: str = Field(..., alias="SIGHT_ENGINE_API_USER")
+    sight_engine_api_secret: str = Field(..., alias="SIGHT_ENGINE_API_SECRET")
 
     anon_url_limit: int = 2
     anon_image_limit: int = 1

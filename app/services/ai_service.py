@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import json
 import logging
 import re
@@ -7,31 +6,26 @@ import time
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
-
 import httpx
-
 from app.core.config import settings
 
 logger = logging.getLogger("veracity.ai_service")
 
 _IANA_TLDS: set[str] | None = None
 _IANA_FETCH_TS: float | None = None
-_IANA_TTL_SEC = 24 * 60 * 60 
+_IANA_TTL_SEC = 24 * 60 * 60
 _IANA_URL = "https://data.iana.org/TLD/tlds-alpha-by-domain.txt"
 _HAS_DIGIT_RE = re.compile(r"\d")
-
 
 async def _load_iana_tlds(client: httpx.AsyncClient) -> set[str]:
     global _IANA_TLDS, _IANA_FETCH_TS
     now = time.time()
     if _IANA_TLDS is not None and _IANA_FETCH_TS and (now - _IANA_FETCH_TS) < _IANA_TTL_SEC:
         return _IANA_TLDS
-
     t0 = time.perf_counter()
     r = await client.get(_IANA_URL, timeout=settings.http_timeout)
     ms = round((time.perf_counter() - t0) * 1000, 1)
     logger.info("iana.tlds.fetch", extra={"status": r.status_code, "ms": ms})
-
     r.raise_for_status()
     lines = r.text.splitlines()
     tlds = {ln.strip().lower() for ln in lines if ln and not ln.startswith("#")}
@@ -45,7 +39,7 @@ class URLSignals:
     host: str
     tld: str
     tld_in_iana: bool
-    tld_ok_input: bool  
+    tld_ok_input: bool
     dns_ok: bool
     subdomain_count: int
     has_hyphen: bool
@@ -53,7 +47,6 @@ class URLSignals:
     is_punycode: bool
     path_len: int
     query_len: int
-
 
 def _compute_signals(
     url: str,
@@ -92,15 +85,14 @@ def _build_prompt(gsb_json: Dict[str, Any], sig: URLSignals) -> str:
         f"Google Safe Browsing: {gsb}\n"
         "Instruções:\n"
         "- Avalie se o endereço tenta se passar por outro pela forma do domínio e subdomínios.\n"
-        "- Mesmo sem alertas no GSB, considere: TLD desconhecido, punycode, muitos subdomínios, hífens/números e caminho longo.\n"
-        "- Explique em UM parágrafo curto, SEM termos técnicos; foque no que o usuário leigo precisa saber e por quê.\n"
-        "- Em seguida, traga 2 recomendações práticas e curtas.\n"
+        "- Mesmo sem alertas no GSB, considere: TLD desconhecido, typosquatting, punycode, muitos subdomínios, hífens/números e caminho longo.\n"
+        "- Explique em UM parágrafo curto, cerca de 50 palavras, SEM termos técnicos; foque no que o usuário leigo precisa saber e por quê.n"
+        "- Traga 2-4 recomendações práticas.\n"
         "Responda SOMENTE com JSON válido no formato exato:\n"
         '{ "classification": "Seguro|Suspeito|Malicioso", '
         '"explanation": "um parágrafo claro e simples", '
         '"recommendations": ["recomendação 1", "recomendação 2"] }\n'
     )
-
 
 async def _hf_chat(
     client: httpx.AsyncClient,
@@ -112,7 +104,7 @@ async def _hf_chat(
     url = f"{settings.hf_base_url}/chat/completions"
     headers = {"Authorization": f"Bearer {settings.hf_token}"}
     body = {
-        "model": settings.hf_model,
+        "model": settings.hf_openai_model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": temperature,
         "max_tokens": max_tokens,
@@ -139,10 +131,8 @@ async def _hf_chat(
         logger.warning("hf.parse_failed", extra={"len": len(txt)})
         return {}
 
-
 def _fallback_from_signals(sig: URLSignals, gsb_json: Dict[str, Any]) -> Dict[str, Any]:
     has_gsb = bool(gsb_json and gsb_json.get("matches"))
-
     hints = list(filter(None, [
         "o endereço já aparece em listas de alerta de segurança" if has_gsb else None,
         "a terminação do endereço (como .com) não é reconhecida" if not sig.tld_in_iana else None,
@@ -152,15 +142,9 @@ def _fallback_from_signals(sig: URLSignals, gsb_json: Dict[str, Any]) -> Dict[st
         "o link é longo demais, o que pode esconder o destino real" if (sig.path_len > 20 or sig.query_len > 0) else None,
         "o endereço não está respondendo como um site ativo" if not sig.dns_ok else None,
     ]))
-
     strong = any([not sig.tld_in_iana, sig.is_punycode, sig.subdomain_count >= 2, not sig.dns_ok])
     weak   = any([sig.has_hyphen, sig.has_digits, sig.path_len > 20, sig.query_len > 0])
-
-    classification = (
-        "Malicioso" if has_gsb else
-        ("Suspeito" if (strong or weak) else "Seguro")
-    )
-
+    classification = ("Malicioso" if has_gsb else ("Suspeito" if (strong or weak) else "Seguro"))
     if hints:
         expl = (
             f"Este link merece atenção porque {', '.join(hints[:-1])}"
@@ -168,24 +152,91 @@ def _fallback_from_signals(sig: URLSignals, gsb_json: Dict[str, Any]) -> Dict[st
         )
     else:
         expl = "O endereço parece consistente para uso comum e não mostra sinais de fraude."
-
     tail = {
         "Malicioso": " Recomendamos tratá-lo como perigoso.",
         "Seguro": ".",
         "Suspeito": ". Se não for um site que você conhece, evite interagir.",
     }[classification]
     expl = expl.rstrip(".") + tail
-
     recommendations = {
         "Malicioso": ["Não clique nem insira dados", "Bloqueie ou reporte este endereço"],
         "Seguro": ["Verifique o cadeado do navegador", "Mantenha navegador e antivírus atualizados"],
         "Suspeito": ["Evite logins e downloads", "Confirme o site por um canal oficial"],
     }[classification]
+    return {"classification": classification, "explanation": expl, "recommendations": recommendations}
+
+
+def _extract_ai_generated(se: Dict[str, Any]) -> float:
+    candidates = []
+    try:
+        if isinstance(se, dict):
+            t = se.get("type") or {}
+            candidates.append(t.get("ai_generated"))
+            candidates.append(se.get("ai_generated"))
+    except Exception:
+        pass
+
+    for v in candidates:
+        try:
+            if v is None:
+                continue
+            x = float(v)
+            if x < 0: x = 0.0
+            if x > 1: x = 1.0
+            return x
+        except Exception:
+            continue
+    return 0.0
+
+def _build_image_prompt_full(filename: str, mime: str, se_full: Dict[str, Any]) -> str:
+    full_json = json.dumps(se_full or {}, ensure_ascii=False)
+    return (
+        "Tarefa: você é um analista de segurança de conteúdo visual. "
+        "Com baseno retorno TÉCNICO do detector Sightengine (já confiável), "
+        "redija uma EXPLICAÇÃO DA CLASSIFICAÇÃO e RECOMENDAÇÕES para um usuário LEIGO.\n"
+        f"Arquivo: {filename} ({mime})\n"
+        f"Sightengine (JSON COMPLETO):\n{full_json}\n\n"
+        "Instruções de estilo (obrigatórias):\n"
+        "- NÃO reclassifique a imagem; apenas explique em palavras simples o que o detector encontrou.\n"
+        "- NÃO use números, porcentagens ou termos técnicos. Evite palavras como 'score', 'probabilidade', 'confiança'.\n"
+        "- Escreva a explicação em 3 a 5 frases, tom calmo, claro e direto, como para alguém que não é da área.\n"
+        "- A explicação deve ser totalmente baseada no retorno do SightEngine e na classificação da label (fake, suspicious, safe)\n"
+        "- NÃO RESUMA O CONTEÚDO DA IMAGEM, NEM CRIE FATOS QUE NÃO EXSITEM. A EXPLICAÇÃO DEVE SER BASEADA NO RETORNO DO SIGHT ENGINE E SOMENTE\n"
+        "- Se houver rosto(s), inclua uma frase curta lembrando sobre privacidade/consentimento ao compartilhar.\n"
+        "- Se houver texto na imagem, cite de forma simples se há algo sensível/ofensivo.\n"
+        "- Traga 2 a 4 recomendações práticas, curtas, no imperativo (ex.: 'Peça autorização antes de publicar').\n"
+        "- Português do Brasil.\n"
+        "Responda ESTRITAMENTE em JSON válido com as chaves:\n"
+        '{ \"explanation\": \"texto claro para leigos (3–5 frases)\", '
+        '\"recommendations\": [\"recomendação 1\", \"recomendação 2\"] }\n"'
+    )
+
+
+def _fallback_from_image(se: Dict[str, Any]) -> Dict[str, Any]:
+    ai_generated = _extract_ai_generated(se)
+    text = se.get("text") or {}
+    quality = (se.get("quality") or {}).get("score")
+
+    hints = []
+    if ai_generated >= 0.60:
+        hints.append(f"o detector indica probabilidade alta de geração por IA (score {ai_generated:.2f})")
+    if text.get("has_artificial", 0):
+        hints.append("há indícios de texto artificial na imagem")
+    if quality is not None and quality < 0.35:
+        hints.append("a qualidade baixa pode esconder sinais de edição")
+
+    if hints:
+        exp = f"Esta imagem requer atenção porque {', '.join(hints[:-1])}{(' e ' + hints[-1]) if len(hints) > 1 else ''}."
+    else:
+        exp = "A imagem não apresenta sinais relevantes de manipulação segundo os indicadores avaliados."
 
     return {
-        "classification": classification,
-        "explanation": expl,
-        "recommendations": recommendations,
+        "explanation": exp,
+        "recommendations": [
+            "Procure a fonte original e versões anteriores",
+            "Evite compartilhar sem contexto",
+            "Se necessário, valide metadados e contexto",
+        ],
     }
 
 class AIService:
@@ -194,81 +245,48 @@ class AIService:
     def __init__(self, client: Optional[httpx.AsyncClient] = None):
         self.client = client
 
-    async def generate_for_url(
-        self,
-        *,
-        url: str,
-        tld_ok: bool,    
-        dns_ok: bool,
-        gsb_json: Dict[str, Any],
-    ) -> Dict[str, Any]:
+    async def generate_for_url(self, *, url: str, tld_ok: bool, dns_ok: bool, gsb_json: Dict[str, Any]) -> Dict[str, Any]:
         client = self.client or httpx.AsyncClient(timeout=settings.http_timeout)
         close_client = self.client is None
         try:
             iana_tlds = await _load_iana_tlds(client)
             sig = _compute_signals(url, iana_tlds, tld_ok_input=tld_ok, dns_ok=dns_ok)
-
             prompt = _build_prompt(gsb_json or {}, sig)
             for temperature, suffix in (
                 (0.16, ""),
-                (0.1, "\nResponda estritamente no JSON solicitado, sem texto fora do objeto."),
+                (0.10, "\nResponda estritamente no JSON solicitado, sem texto fora do objeto."),
             ):
                 out = await _hf_chat(client, prompt + suffix, temperature=temperature, max_tokens=360)
                 if all(k in out for k in ("classification", "explanation", "recommendations")):
                     out["explanation"] = " ".join(str(out.get("explanation", "")).split())
                     return out
-
-            fb = _fallback_from_signals(sig, gsb_json or {})
-            logger.info("hf.dynamic_fallback", extra={"classification": fb["classification"]})
-            return fb
-
+            return _fallback_from_signals(sig, gsb_json or {})
         finally:
             if close_client:
                 await client.aclose()
-                
+
     async def generate_for_image(
         self,
         *,
         filename: str,
         mime: str,
-        deepfake_json: Dict[str, Any],
-        vit_json: Dict[str, Any],
+        detection_json: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """
-        Gera uma explicação curta e leiga, em JSON, a partir dos sinais dos modelos.
-        """
-        def _short(d: Any) -> str:
-            try:
-                txt = json.dumps(d, ensure_ascii=False)
-                return txt[:1800] 
-            except Exception:
-                return str(d)[:1800]
+        se_full = detection_json or {}
 
-        prompt = (
-            "Tarefa: você é um analista de segurança de imagens. "
-            "Dadas as saídas de modelos (detector de deepfake e um classificador geral), "
-            "resuma o risco para o usuário leigo.\n"
-            f"Arquivo: {filename} ({mime})\n"
-            f"Deepfake JSON (resumo): {_short(deepfake_json)}\n"
-            f"ViT JSON (resumo): {_short(vit_json)}\n"
-            "Instruções:\n"
-            "- Se o detector indicar probabilidade relevante de falsificação/face manipulada, classifique como 'Falso'.\n"
-            "- Se houver alguma incerteza relevante, use 'Suspeito'. Caso contrário, 'Seguro'.\n"
-            "- Explique em 1 parágrafo curto, sem jargões.\n"
-            "- Em seguida forneça 2 recomendações práticas.\n"
-            "Responda SOMENTE com JSON válido:\n"
-            '{ "classification": "Seguro|Suspeito|Falso", '
-            '"explanation": "texto curto e claro", '
-            '"recommendations": ["reco 1", "reco 2"] }\n"'
-        )
-
-        out = await _hf_chat(self.client or httpx.AsyncClient(timeout=settings.http_timeout), prompt, temperature=0.16, max_tokens=320)
-        if not all(k in out for k in ("classification","explanation","recommendations")):
-            return {
-                "classification": "Seguro",
-                "explanation": "Não há indícios fortes de manipulação na imagem.",
-                "recommendations": ["Guarde o original com metadados", "Desconfie de imagens sem fonte confiável"],
-            }
-        out["explanation"] = " ".join(str(out.get("explanation","")).split())
-        return out
-
+        client = self.client or httpx.AsyncClient(timeout=settings.http_timeout)
+        close_client = self.client is None
+        try:
+            prompt = _build_image_prompt_full(filename, mime, se_full)
+            for temperature, suffix in (
+                (0.16, ""),
+                (0.10, "\nResponda estritamente no JSON solicitado, sem texto fora do objeto."),
+            ):
+                out = await _hf_chat(client, prompt + suffix, temperature=temperature, max_tokens=480)
+                if all(k in out for k in ("explanation", "recommendations")):
+                    out["explanation"] = " ".join(str(out.get("explanation", "")).split())
+                    return out
+            return _fallback_from_image(se_full)
+        finally:
+            if close_client:
+                await client.aclose()
