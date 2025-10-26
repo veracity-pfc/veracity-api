@@ -85,9 +85,9 @@ def _build_prompt(gsb_json: Dict[str, Any], sig: URLSignals) -> str:
         f"Google Safe Browsing: {gsb}\n"
         "Instruções:\n"
         "- Avalie se o endereço tenta se passar por outro pela forma do domínio e subdomínios.\n"
-        "- Mesmo sem alertas no GSB, considere: TLD desconhecido, typosquatting, punycode, muitos subdomínios, hífens/números e caminho longo.\n"
-        "- Explique em UM parágrafo curto, cerca de 50 palavras, SEM termos técnicos; foque no que o usuário leigo precisa saber e por quê.n"
-        "- Traga 2-4 recomendações práticas.\n"
+        "- Mesmo sem alertas no GSB, considere: TLD desconhecido, punycode, muitos subdomínios, hífens/números e caminho longo.\n"
+        "- Explique em UM parágrafo curto, SEM termos técnicos; foque no que o usuário leigo precisa saber e por quê.\n"
+        "- Em seguida, traga 2 recomendações práticas e curtas.\n"
         "Responda SOMENTE com JSON válido no formato exato:\n"
         '{ "classification": "Seguro|Suspeito|Malicioso", '
         '"explanation": "um parágrafo claro e simples", '
