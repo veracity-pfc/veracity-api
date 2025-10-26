@@ -225,3 +225,50 @@ class AIService:
         finally:
             if close_client:
                 await client.aclose()
+                
+    async def generate_for_image(
+        self,
+        *,
+        filename: str,
+        mime: str,
+        deepfake_json: Dict[str, Any],
+        vit_json: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Gera uma explicação curta e leiga, em JSON, a partir dos sinais dos modelos.
+        """
+        def _short(d: Any) -> str:
+            try:
+                txt = json.dumps(d, ensure_ascii=False)
+                return txt[:1800] 
+            except Exception:
+                return str(d)[:1800]
+
+        prompt = (
+            "Tarefa: você é um analista de segurança de imagens. "
+            "Dadas as saídas de modelos (detector de deepfake e um classificador geral), "
+            "resuma o risco para o usuário leigo.\n"
+            f"Arquivo: {filename} ({mime})\n"
+            f"Deepfake JSON (resumo): {_short(deepfake_json)}\n"
+            f"ViT JSON (resumo): {_short(vit_json)}\n"
+            "Instruções:\n"
+            "- Se o detector indicar probabilidade relevante de falsificação/face manipulada, classifique como 'Falso'.\n"
+            "- Se houver alguma incerteza relevante, use 'Suspeito'. Caso contrário, 'Seguro'.\n"
+            "- Explique em 1 parágrafo curto, sem jargões.\n"
+            "- Em seguida forneça 2 recomendações práticas.\n"
+            "Responda SOMENTE com JSON válido:\n"
+            '{ "classification": "Seguro|Suspeito|Falso", '
+            '"explanation": "texto curto e claro", '
+            '"recommendations": ["reco 1", "reco 2"] }\n"'
+        )
+
+        out = await _hf_chat(self.client or httpx.AsyncClient(timeout=settings.http_timeout), prompt, temperature=0.16, max_tokens=320)
+        if not all(k in out for k in ("classification","explanation","recommendations")):
+            return {
+                "classification": "Seguro",
+                "explanation": "Não há indícios fortes de manipulação na imagem.",
+                "recommendations": ["Guarde o original com metadados", "Desconfie de imagens sem fonte confiável"],
+            }
+        out["explanation"] = " ".join(str(out.get("explanation","")).split())
+        return out
+

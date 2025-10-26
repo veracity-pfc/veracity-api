@@ -6,9 +6,10 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from datetime import datetime, timezone
-
+from app.domain.ai_model import AIResponse
 from app.core.config import settings
-from app.domain.analysis_model import Analysis, UrlAnalysis
+from app.domain.analysis_model import Analysis
+from app.domain.url_analysis_model import UrlAnalysis
 from app.domain.enums import AnalysisType, AnalysisStatus, RiskLabel
 from app.api.deps import ip_hash_from_request
 from app.repositories.audit_repo import AuditRepository
@@ -114,7 +115,7 @@ class UrlAnalysisService:
 
         host = only_host(url_in)
         _dns_ok = await dns_ok(host)
-        from app.schemas.analysis import has_valid_tld
+        from app.schemas.url_analysis import has_valid_tld
         _tld_ok = has_valid_tld(host)
 
         timeout = httpx.Timeout(settings.http_timeout)
@@ -142,7 +143,7 @@ class UrlAnalysisService:
         )
         self.session.add(url_row)
 
-        from app.domain.ai_model import AIResponse
+
         ai_resp = AIResponse(
             analysis_id=analysis.id,
             provider="hf-router",

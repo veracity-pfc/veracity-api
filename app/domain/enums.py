@@ -18,6 +18,7 @@ class AnalysisStatus(str, Enum):
     error = "error"
 
 class RiskLabel(str, Enum):
+    fake = "fake"
     safe = "safe"
     suspicious = "suspicious"
     malicious = "malicious"
