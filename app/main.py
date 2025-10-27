@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from sqlalchemy import text
 import asyncio
 from app.core.database import engine
-from app.api.routers import auth_router, users_router, admin_router, contact_router, analysis_router
+from app.api.controllers import admin_controller, analysis_controller, auth_controller, contact_controller, users_controller, history_controller
 from app.core.security import pwd_context
 from bcrypt import checkpw, hashpw, gensalt
 
@@ -60,11 +60,12 @@ app.add_middleware(
 async def unhandled_ex_handler(_: Request, __: Exception):
     return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
-app.include_router(auth_router.router)
-app.include_router(users_router.router)
-app.include_router(admin_router.router)
-app.include_router(contact_router.router)
-app.include_router(analysis_router.router)
+app.include_router(auth_controller.router)
+app.include_router(users_controller.router)
+app.include_router(admin_controller.router)
+app.include_router(contact_controller.router)
+app.include_router(analysis_controller.router)
+app.include_router(history_controller.router)
 
 @app.get("/health")
 def health():

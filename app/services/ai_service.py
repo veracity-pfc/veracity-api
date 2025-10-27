@@ -192,25 +192,31 @@ def _build_image_prompt_full(filename: str, mime: str, se_full: Dict[str, Any]) 
     full_json = json.dumps(se_full or {}, ensure_ascii=False)
     return (
         "Tarefa: você é um analista de segurança de conteúdo visual. "
-        "Com baseno retorno TÉCNICO do detector Sightengine (já confiável), "
-        "redija uma EXPLICAÇÃO DA CLASSIFICAÇÃO e RECOMENDAÇÕES para um usuário LEIGO.\n"
+        "Com base no retorno TÉCNICO do detector Sightengine (considerado confiável), "
+        "gere uma EXPLICAÇÃO DA CLASSIFICAÇÃO e RECOMENDAÇÕES para um usuário leigo.\n"
         f"Arquivo: {filename} ({mime})\n"
         f"Sightengine (JSON COMPLETO):\n{full_json}\n\n"
+        "REGRAS DE INTERPRETAÇÃO (obrigatórias):\n"
+        "- Leia os campos 'type.ai_generated' ou 'genai.ai_generated' (ou equivalentes).\n"
+        "- Se o valor indicado for muito alto (≈ 0.90 ou maior), trate como FALSA (fake).\n"
+        "- Se for intermediário (≈ 0.60 a 0.89), trate como SUSPEITA (suspicious).\n"
+        "- Se for baixo (abaixo de ≈ 0.60), trate como SEGURA (safe).\n"
+        "IMPORTANTE: a explicação DEVE refletir essa interpretação. Nunca diga que é 'segura' se a leitura indicar 'falsa' ou 'suspeita'.\n\n"
         "Instruções de estilo (obrigatórias):\n"
-        "- NÃO reclassifique a imagem; apenas explique em palavras simples o que o detector encontrou.\n"
-        "- NÃO use números, porcentagens ou termos técnicos. Evite palavras como 'score', 'probabilidade', 'confiança'.\n"
-        "- Escreva a explicação em 3 a 5 frases, tom calmo, claro e direto, como para alguém que não é da área.\n"
-        "- A explicação deve ser totalmente baseada no retorno do SightEngine e na classificação da label (fake, suspicious, safe)\n"
-        "- NÃO RESUMA O CONTEÚDO DA IMAGEM, NEM CRIE FATOS QUE NÃO EXSITEM. A EXPLICAÇÃO DEVE SER BASEADA NO RETORNO DO SIGHT ENGINE E SOMENTE\n"
-        "- Se houver rosto(s), inclua uma frase curta lembrando sobre privacidade/consentimento ao compartilhar.\n"
-        "- Se houver texto na imagem, cite de forma simples se há algo sensível/ofensivo.\n"
+        "- NÃO reclassifique de forma independente; explique o porquê da leitura acima usando os sinais que aparecem no JSON.\n"
+        "- A PRIMEIRA FRASE deve começar com: 'Foi classificada como <Falsa/Suspeita/Segura> porque...' e citar o(s) motivo(s) do Sightengine "
+        "(ex.: 'o detector apontou geração por IA', 'não há sinais de geração por IA nem conteúdo proibido', etc.).\n"
+        "- NÃO use números, porcentagens ou termos técnicos como 'score', 'probabilidade', 'confiança'.\n"
+        "- NÃO descreva o conteúdo visual da foto; fale apenas dos sinais do detector.\n"
+        "- Escreva a explicação em 3 a 5 frases, tom calmo e claro.\n"
+        "- Se houver rosto(s) no JSON, inclua uma frase curta sobre privacidade/consentimento ao compartilhar.\n"
+        "- Se houver texto sensível/ofensivo no JSON, mencione de forma simples.\n"
         "- Traga 2 a 4 recomendações práticas, curtas, no imperativo (ex.: 'Peça autorização antes de publicar').\n"
-        "- Português do Brasil.\n"
-        "Responda ESTRITAMENTE em JSON válido com as chaves:\n"
-        '{ \"explanation\": \"texto claro para leigos (3–5 frases)\", '
-        '\"recommendations\": [\"recomendação 1\", \"recomendação 2\"] }\n"'
+        "- Português do Brasil.\n\n"
+        "Formato de saída (obrigatório): responda ESTRITAMENTE em JSON válido com as chaves:\n"
+        '{\"explanation\": \"texto claro para leigos (3–5 frases)\", '
+        '\"recommendations\": [\"recomendação 1\", \"recomendação 2\"]}\n"'
     )
-
 
 def _fallback_from_image(se: Dict[str, Any]) -> Dict[str, Any]:
     ai_generated = _extract_ai_generated(se)

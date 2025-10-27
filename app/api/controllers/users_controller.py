@@ -18,12 +18,3 @@ async def profile(user=Depends(get_current_user)):
         "status": user.status.value,
         "created_at": user.created_at,
     }
-
-@router.get("/history")
-async def history(user=Depends(get_current_user), session: AsyncSession = Depends(get_db)):
-    q = await session.execute(select(Analysis).where(Analysis.user_id == user.id).order_by(Analysis.created_at.desc()).limit(50))
-    rows = q.scalars().all()
-    return [
-        {"id": str(a.id), "type": a.analysis_type.value, "label": a.label.value, "created_at": a.created_at}
-        for a in rows
-    ]

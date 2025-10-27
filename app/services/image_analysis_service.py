@@ -1,11 +1,13 @@
 from __future__ import annotations
-import logging
+import logging, json
 from typing import Any, Dict, Optional, Tuple
 from datetime import datetime, timezone
+
 import httpx
 import filetype
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+
 from app.core.config import settings
 from app.api.deps import ip_hash_from_request
 from app.repositories.audit_repo import AuditRepository
@@ -17,7 +19,6 @@ from app.services.ai_service import AIService
 
 logger = logging.getLogger("veracity.image_analysis")
 ALLOWED_MIMES = {"image/png", "image/jpeg"}
-
 
 def _detect_mime(data: bytes) -> str | None:
     kind = filetype.guess(data)
@@ -61,7 +62,6 @@ def _pt_label(label: RiskLabel) -> str:
         RiskLabel.unknown: "Desconhecido",
     }[label]
 
-
 def _resolve_user_id(request, explicit_user_id: Optional[str]) -> Optional[str]:
     if explicit_user_id:
         return explicit_user_id
@@ -86,7 +86,6 @@ def _resolve_user_id(request, explicit_user_id: Optional[str]) -> Optional[str]:
         pass
     return None
 
-
 async def _count_today(session: AsyncSession, analysis_type: AnalysisType, *, user_id: Optional[str], actor_hash: Optional[str]) -> int:
     now = datetime.now(timezone.utc)
     start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
@@ -101,9 +100,6 @@ async def _count_today(session: AsyncSession, analysis_type: AnalysisType, *, us
     return (await session.execute(q)).scalar_one()
 
 async def _check_daily_limit(session: AsyncSession, analysis_type: AnalysisType, *, user_id: Optional[str], actor_hash: Optional[str]) -> Tuple[int, int, str]:
-    """
-    Retorna (used_today, limit, scope). Lança erro se excedido.
-    """
     if getattr(settings, "disable_limits", False):
         return (0, 0, "disabled")
     used = await _count_today(session, analysis_type, user_id=user_id, actor_hash=actor_hash)
@@ -196,12 +192,60 @@ class ImageAnalysisService:
             "notes": "Classificação baseada somente em type/genai.ai_generated do Sightengine.",
         }
 
-        ai = AIService()
-        ai_text = await ai.generate_for_image(
-            filename=filename,
-            mime=content_type,
-            detection_json=se_json,
-        )
+        pct = round(ai_generated * 100, 1)
+        if label_enum == RiskLabel.fake:
+            base_expl = (
+                f"A imagem '{filename}' apresenta fortes indícios de geração por IA "
+                f"(probabilidade {pct}%)."
+            )
+        elif label_enum == RiskLabel.suspicious:
+            base_expl = (
+                f"A imagem '{filename}' possui sinais de possível geração por IA "
+                f"(probabilidade {pct}%)."
+            )
+        else:
+            base_expl = (
+                f"A imagem '{filename}' não apresentou sinais relevantes de geração por IA "
+                f"(probabilidade {pct}%)."
+            )
+
+        if label_enum == RiskLabel.fake:
+            base_recs = [
+                "Não compartilhe esta imagem.",
+                "Solicite a fonte original se necessário.",
+                "Se for associada ao seu nome, publique um desmentido e guarde evidências."
+            ]
+        elif label_enum == RiskLabel.suspicious:
+            base_recs = [
+                "Busque a fonte original (reverse image search).",
+                "Evite conclusões sem validação independente.",
+                "Se necessário, solicite verificação a um canal oficial."
+            ]
+        else:
+            base_recs = [
+                "Respeite a privacidade de pessoas retratadas.",
+                "Verifique se não há dados sensíveis antes de publicar."
+            ]
+
+        extra_expl = ""
+        extra_recs: list[str] = []
+        try:
+            ai = AIService()
+            ai_text = await ai.generate_for_image(
+                filename=filename,
+                mime=content_type,
+                detection_json=se_json,
+            )
+            extra_expl = (ai_text.get("explanation") or "").strip()
+            rs = ai_text.get("recommendations") or []
+            if isinstance(rs, list):
+                extra_recs = [str(x).strip() for x in rs if str(x).strip()]
+        except Exception as e:
+            logger.warning("AIService.generate_for_image falhou: %s", e)
+
+        explanation = base_expl if not extra_expl else f"{base_expl}\n\nObservação do modelo: {extra_expl}"
+        recs_set = set(base_recs)
+        recommendations = base_recs + [r for r in extra_recs if r not in recs_set]
 
         img_row = ImageAnalysis(
             analysis_id=analysis.id,
@@ -214,11 +258,16 @@ class ImageAnalysisService:
         )
         self.session.add(img_row)
 
+        ai_json_std = {
+            "explanation": explanation,
+            "classification": _pt_label(label_enum),   
+            "recommendations": recommendations,
+        }
         ai_resp = AIResponse(
             analysis_id=analysis.id,
-            provider="openai",
+            provider="hf-router",
             model=getattr(settings, "hf_openai_model", None) or "gpt-4o-mini",
-            content=ai_text.get("explanation", ""),
+            content=json.dumps(ai_json_std, ensure_ascii=False),
         )
         self.session.add(ai_resp)
         await self.session.flush()
@@ -242,17 +291,12 @@ class ImageAnalysisService:
 
         used_after = used_today + 1
         remaining = max(0, (limit - used_after)) if limit else 0
-
-        return analysis, img_row, {
-            "classification": _pt_label(label_enum),
-            "label": label_enum.value,
-            "explanation": ai_text.get("explanation", ""),
-            "recommendations": ai_text.get("recommendations", []),
-            "score_ai_generated": round(ai_generated, 3),
-            "quota": {
-                "scope": scope,                
-                "limit": limit,
-                "used_today": used_after,
-                "remaining_today": remaining,
-            },
+        ai_json_std["quota"] = {
+            "scope": scope,
+            "limit": limit,
+            "used_today": used_after,
+            "remaining_today": remaining,
         }
+        ai_json_std["label"] = label_enum.value  
+
+        return analysis, img_row, ai_json_std
