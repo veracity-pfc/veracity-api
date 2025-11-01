@@ -12,9 +12,9 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/login", response_model=TokenOut)
 async def login(data: LogIn, request: Request, session: AsyncSession = Depends(get_session)):
-    svc = AuthService(session)
+    service = AuthService(session)
     try:
-        token = await svc.login(data.email, data.password, request)
+        token = await service.login(data.email, data.password, request)
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_alg])
         role = payload.get("role", "user")
         return TokenOut(access_token=token, role=role)
@@ -25,18 +25,18 @@ async def login(data: LogIn, request: Request, session: AsyncSession = Depends(g
 
 @router.post("/register", response_model=OkOut)
 async def register(data: RegisterIn, request: Request, session: AsyncSession = Depends(get_session)):
-    svc = AuthService(session)
+    service = AuthService(session)
     try:
-        await svc.register(data.name, data.email, data.password, data.accepted_terms, request)
+        await service.register(data.name, data.email, data.password, data.accepted_terms, request)
         return OkOut()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/verify-email", response_model=TokenOut)
 async def verify_email(data: VerifyEmailIn, request: Request, session: AsyncSession = Depends(get_session)):
-    svc = AuthService(session)
+    service = AuthService(session)
     try:
-        token = await svc.verify_email(data.email, data.code, request)
+        token = await service.verify_email(data.email, data.code, request)
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_alg])
         role = payload.get("role", "user")
         return TokenOut(access_token=token, role=role)
@@ -45,29 +45,33 @@ async def verify_email(data: VerifyEmailIn, request: Request, session: AsyncSess
 
 @router.post("/resend-code", response_model=OkOut)
 async def resend_code(data: VerifyEmailIn, request: Request, session: AsyncSession = Depends(get_session)):
-    svc = AuthService(session)
+    service = AuthService(session)
     try:
-        await svc.resend_code(data.email, request)
+        await service.resend_code(data.email, request)
         return OkOut()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     
-
 @router.post("/forgot-password", response_model=OkOut)
 async def forgot_password(data: ForgotPasswordIn, request: Request, session: AsyncSession = Depends(get_session)):
-    svc = AuthService(session)
+    service = AuthService(session)
     try:
-        await svc.forgot_password(data.email, request)
+        await service.forgot_password(data.email, request)
         return OkOut()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/reset-password/{token}", response_model=OkOut)
 async def reset_password(token: str, data: ResetPasswordIn, request: Request, session: AsyncSession = Depends(get_session)):
-    svc = AuthService(session)
+    service = AuthService(session)
     try:
-        await svc.reset_password(token, data.password, data.confirm_password, request)
+        await service.reset_password(token, data.password, data.confirm_password, request)
         return OkOut()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@router.post("/logout", response_model=OkOut)
+async def logout(request: Request, session: AsyncSession = Depends(get_session)):
+    service = AuthService(session)
+    await service.logout(request)
+    return OkOut()

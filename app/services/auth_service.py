@@ -12,6 +12,7 @@ from app.domain.pending_registration_model import PendingRegistration
 from app.domain.audit_model import AuditLog
 from app.api.deps import ip_hash_from_request
 from app.services.email_service import reset_password_email_html, send_email, verification_email_html, EmailError
+from jose import jwt, JWTError  
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -312,3 +313,27 @@ class AuthService:
         )
         await self.session.commit()
 
+    async def logout(self, request) -> None:
+        user_id = None
+        auth = (request.headers.get("authorization") or request.headers.get("Authorization") or "").strip()
+        token = None
+        if auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+
+        if token:
+            try:
+                payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_alg])
+                user_id = payload.get("sub")
+            except JWTError:
+                pass
+
+        await self.session.execute(
+            AuditLog.__table__.insert().values(
+                user_id=user_id,
+                actor_ip_hash=ip_hash_from_request(request),
+                action="auth.logout",
+                resource="/auth/logout",
+                success=True,
+            )
+        )
+        await self.session.commit()
