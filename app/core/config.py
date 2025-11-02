@@ -23,10 +23,10 @@ class Settings(BaseSettings):
     sight_engine_api_user: str = Field(..., alias="SIGHT_ENGINE_API_USER")
     sight_engine_api_secret: str = Field(..., alias="SIGHT_ENGINE_API_SECRET")
 
-    anon_url_limit: int = 2
-    anon_image_limit: int = 1
-    user_url_limit: int = 5
-    user_image_limit: int = 3
+    anon_url_limit: int = Field(..., alias="ANON_URL_ANALYSIS_LIMIT")
+    anon_image_limit: int = Field(..., alias="ANON_IMAGE_ANALYSIS_LIMIT")
+    user_url_limit: int = Field(..., alias="USER_URL_ANALYSIS_LIMIT")
+    user_image_limit: int = Field(..., alias="USER_IMAGE_ANALYSIS_LIMIT")
 
     http_timeout: float = 6.0
     

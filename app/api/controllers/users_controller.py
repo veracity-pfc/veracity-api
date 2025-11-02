@@ -7,9 +7,11 @@ from typing import Literal
 from secrets import randbelow
 from app.api.deps import get_current_user
 from app.core.database import get_session as get_db
+from app.core.config import settings
 from app.domain.user_model import User
 from app.domain.enums import UserStatus
 from app.domain.url_analysis_model import UrlAnalysis
+from app.domain.image_analysis_model import ImageAnalysis
 from app.domain.password_reset import PasswordReset
 from app.domain.audit_model import AuditLog
 from app.domain.analysis_model import Analysis
@@ -21,7 +23,7 @@ router = APIRouter(prefix="/user", tags=["user"])
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 def _quotas():
-    return {"urls": 25, "images": 25}
+    return {"urls": settings.user_url_limit, "images": settings.user_image_limit}
 
 @router.get("/profile")
 async def get_profile(
@@ -48,8 +50,8 @@ async def get_profile(
 
     quotas = _quotas()
     remaining = {
-        "urls": max(quotas["urls"] - int(today_map.get(AnalysisType.url, 0)), 0),
-        "images": max(quotas["images"] - int(today_map.get(AnalysisType.image, 0)), 0),
+        "urls": max(int(quotas["urls"]) - int(today_map.get(AnalysisType.url, 0)), 0),
+        "images": max(int(quotas["images"]) - int(today_map.get(AnalysisType.image, 0)), 0),
     }
 
     return {
@@ -176,28 +178,39 @@ async def confirm_email_change(
     await session.commit()
     return {"ok": True, "email": pending.new_email}
 
-@router.delete("/account")
-async def delete_or_inactivate_account(
-    mode: Literal["delete", "inactivate"] = Query(...),
+@router.patch("/account")
+async def inactivate_account(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    if mode == "inactivate":
-        await session.execute(update(User).where(User.id == user.id).values(status=UserStatus.inactive))
-        action = "user.inactivate"
-    else:
-        await session.execute(update(AuditLog).where(AuditLog.user_id == user.id).values(user_id=None))
-        await session.execute(delete(PasswordReset).where(PasswordReset.user_id == user.id))
-        await session.execute(delete(UrlAnalysis).where(UrlAnalysis.user_id == user.id))
-        await session.execute(delete(Analysis).where(Analysis.user_id == user.id))
-        await session.execute(delete(PendingEmailChange).where(PendingEmailChange.user_id == user.id))
-        await session.execute(delete(User).where(User.id == user.id))
-        action = "user.delete"
-
+    await session.execute(update(User).where(User.id == user.id).values(status=UserStatus.inactive))
     await session.execute(
         AuditLog.__table__.insert().values(
-            user_id=None if mode == "delete" else user.id,
-            action=action,
+            user_id=user.id,
+            action="user.inactivate",
+            resource="/user/account",
+            success=True,
+        )
+    )
+    await session.commit()
+    return {"ok": True, "status": "inactive"}
+
+@router.delete("/account")
+async def delete_account(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await session.execute(update(AuditLog).where(AuditLog.user_id == user.id).values(user_id=None))
+    await session.execute(delete(PasswordReset).where(PasswordReset.user_id == user.id))
+    await session.execute(update(UrlAnalysis).where(UrlAnalysis.user_id == user.id).values(user_id=None))
+    await session.execute(update(ImageAnalysis).where(ImageAnalysis.user_id == user.id).values(user_id=None))
+    await session.execute(update(Analysis).where(Analysis.user_id == user.id).values(user_id=None))
+    await session.execute(delete(PendingEmailChange).where(PendingEmailChange.user_id == user.id))
+    await session.execute(delete(User).where(User.id == user.id))
+    await session.execute(
+        AuditLog.__table__.insert().values(
+            user_id=None,
+            action="user.delete",
             resource="/user/account",
             success=True,
         )
