@@ -1,41 +1,37 @@
 import re
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, Body, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, Body, HTTPException, Query
 from sqlalchemy import select, update, delete, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Literal
 from secrets import randbelow
-
 from app.api.deps import get_current_user
 from app.core.database import get_session as get_db
-from app.core.config import settings
 from app.domain.user_model import User
+from app.domain.enums import UserStatus
+from app.domain.url_analysis_model import UrlAnalysis
+from app.domain.password_reset import PasswordReset
 from app.domain.audit_model import AuditLog
 from app.domain.analysis_model import Analysis
 from app.domain.enums import AnalysisType
 from app.domain.pending_email_change_model import PendingEmailChange
-from app.services.email_service import send_email, verification_email_html
 
 router = APIRouter(prefix="/user", tags=["user"])
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-
-def _today_range():
-    now = datetime.now(timezone.utc)
-    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    end = datetime(now.year, now.month, now.day, 23, 59, 59, 999000, tzinfo=timezone.utc)
-    return start, end
-
-
 def _quotas():
-    return {"urls": getattr(settings, "daily_url_quota", 25),
-            "images": getattr(settings, "daily_image_quota", 25)}
-
+    return {"urls": 25, "images": 25}
 
 @router.get("/profile")
-async def profile(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)):
-    start, end = _today_range()
+async def get_profile(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    now = datetime.now(timezone.utc)
+    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+
     q_today = await session.execute(
         select(Analysis.analysis_type, func.count(Analysis.id))
         .where(Analysis.user_id == user.id, Analysis.created_at >= start, Analysis.created_at <= end)
@@ -69,26 +65,15 @@ async def profile(user: User = Depends(get_current_user), session: AsyncSession 
         },
     }
 
-
 @router.patch("/profile/name")
 async def update_name(
     payload: dict = Body(...),
-    validate_only: bool = Query(False),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     new_name = (payload.get("name") or "").strip()
-
-    if not new_name:
-        raise HTTPException(status_code=400, detail="Informe um nome.")
-    if new_name == (user.name or "").strip():
-        raise HTTPException(status_code=400, detail="O nome precisa ser diferente do atual.")
-    if len(new_name) < 3 or len(new_name) > 60:
-        raise HTTPException(status_code=400, detail="Nome deve ter entre 3 e 60 caracteres.")
-
-    if validate_only:
-        return {"ok": True}
-
+    if len(new_name) < 3 or len(new_name) > 30:
+        raise HTTPException(status_code=400, detail="Nome deve ter entre 3 e 30 caracteres.")
     await session.execute(update(User).where(User.id == user.id).values(name=new_name))
     await session.execute(
         AuditLog.__table__.insert().values(
@@ -96,12 +81,25 @@ async def update_name(
             action="user.update_name",
             resource="/user/profile/name",
             success=True,
-            details={"from": user.name, "to": new_name},
+            details={"name": new_name},
         )
     )
     await session.commit()
     return {"ok": True, "name": new_name}
 
+@router.patch("/profile/name", name="validate_name")
+async def validate_name_only(
+    payload: dict = Body(...),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+    validate_only: bool = Query(False),
+):
+    if not validate_only:
+        raise HTTPException(status_code=404, detail="Not found")
+    new_name = (payload.get("name") or "").strip()
+    if len(new_name) < 3 or len(new_name) > 30:
+        raise HTTPException(status_code=400, detail="Nome deve ter entre 3 e 30 caracteres.")
+    return {"ok": True}
 
 @router.post("/profile/email-change/request")
 async def request_email_change(
@@ -112,29 +110,19 @@ async def request_email_change(
     new_email = (payload.get("email") or "").strip().lower()
     if not EMAIL_RE.fullmatch(new_email):
         raise HTTPException(status_code=400, detail="E-mail inválido.")
-    if new_email == (user.email or "").lower():
-        raise HTTPException(status_code=400, detail="Informe um e-mail diferente do atual.")
-    exists = await session.scalar(select(User.id).where(func.lower(User.email) == new_email))
-    if exists:
-        raise HTTPException(status_code=400, detail="E-mail já está em uso por outra conta.")
+    exists = await session.execute(select(User.id).where(func.lower(User.email) == new_email))
+    if exists.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="E-mail já cadastrado.")
+    prev = await session.execute(select(PendingEmailChange).where(PendingEmailChange.user_id == user.id))
+    old = prev.scalar_one_or_none()
+    if old:
+        await session.execute(delete(PendingEmailChange).where(PendingEmailChange.id == old.id))
 
-    await session.execute(delete(PendingEmailChange).where(PendingEmailChange.user_id == user.id))
-
-    code = f"{randbelow(1_000_000):06d}"
-    rec = PendingEmailChange(
-        user_id=user.id,
-        new_email=new_email,
-        token=code,
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
-    )
+    code = f"{randbelow(1000000):06d}"
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+    rec = PendingEmailChange(user_id=user.id, new_email=new_email, code=code, expires_at=expires_at)
     session.add(rec)
     await session.flush()
-
-    await send_email(
-        to=new_email,
-        subject="Confirmação de e-mail - Veracity",
-        html_body=verification_email_html(user.name or "Usuário", code),
-    )
 
     await session.execute(
         AuditLog.__table__.insert().values(
@@ -146,7 +134,7 @@ async def request_email_change(
         )
     )
     await session.commit()
-    return {"ok": True, "requires_verification": True, "email": new_email}
+    return {"ok": True, "requires_verification": True}
 
 @router.post("/profile/email-change/confirm")
 async def confirm_email_change(
@@ -154,39 +142,25 @@ async def confirm_email_change(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    email_in = (payload.get("email") or "").strip().lower()
     code = (payload.get("code") or "").strip()
+    email = (payload.get("email") or "").strip().lower()
 
-    if not code or len(code) != 6 or not code.isdigit():
-        raise HTTPException(status_code=400, detail="Código inválido.")
-
-    if email_in:
-        q = await session.execute(
-            select(PendingEmailChange).where(
-                PendingEmailChange.user_id == user.id,
-                func.lower(PendingEmailChange.new_email) == email_in,
-            )
+    q = await session.execute(
+        select(PendingEmailChange).where(
+            and_(PendingEmailChange.user_id == user.id, func.lower(PendingEmailChange.new_email) == email)
         )
-    else:
-        q = await session.execute(
-            select(PendingEmailChange)
-            .where(PendingEmailChange.user_id == user.id)
-            .order_by(PendingEmailChange.created_at.desc())
-            .limit(1)
-        )
-
+    )
     pending = q.scalar_one_or_none()
     if not pending:
         raise HTTPException(status_code=400, detail="Solicitação não encontrada.")
-
     now = datetime.now(timezone.utc)
-    if now > pending.expires_at:
+    if pending.expires_at < now:
         await session.execute(delete(PendingEmailChange).where(PendingEmailChange.id == pending.id))
         await session.commit()
-        raise HTTPException(status_code=400, detail="Código expirado. Solicite novamente.")
+        raise HTTPException(status_code=400, detail="Código expirado.")
 
-    if pending.token != code:
-        raise HTTPException(status_code=400, detail="Código inválido. Tente novamente.")
+    if pending.code != code:
+        raise HTTPException(status_code=400, detail="Código inválido.")
 
     await session.execute(update(User).where(User.id == user.id).values(email=pending.new_email))
     await session.execute(delete(PendingEmailChange).where(PendingEmailChange.id == pending.id))
@@ -202,7 +176,6 @@ async def confirm_email_change(
     await session.commit()
     return {"ok": True, "email": pending.new_email}
 
-
 @router.delete("/account")
 async def delete_or_inactivate_account(
     mode: Literal["delete", "inactivate"] = Query(...),
@@ -210,15 +183,20 @@ async def delete_or_inactivate_account(
     session: AsyncSession = Depends(get_db),
 ):
     if mode == "inactivate":
-        await session.execute(update(User).where(User.id == user.id).values(status="inactive"))
+        await session.execute(update(User).where(User.id == user.id).values(status=UserStatus.inactive))
         action = "user.inactivate"
     else:
+        await session.execute(update(AuditLog).where(AuditLog.user_id == user.id).values(user_id=None))
+        await session.execute(delete(PasswordReset).where(PasswordReset.user_id == user.id))
+        await session.execute(delete(UrlAnalysis).where(UrlAnalysis.user_id == user.id))
+        await session.execute(delete(Analysis).where(Analysis.user_id == user.id))
+        await session.execute(delete(PendingEmailChange).where(PendingEmailChange.user_id == user.id))
         await session.execute(delete(User).where(User.id == user.id))
         action = "user.delete"
 
     await session.execute(
         AuditLog.__table__.insert().values(
-            user_id=user.id,
+            user_id=None if mode == "delete" else user.id,
             action=action,
             resource="/user/account",
             success=True,

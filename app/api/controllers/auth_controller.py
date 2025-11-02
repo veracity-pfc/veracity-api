@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
 from app.core.database import get_session
 from app.schemas.auth import LogIn, TokenOut, RegisterIn, VerifyEmailIn
 from app.schemas.common import OkOut
@@ -7,11 +8,22 @@ from jose import jwt
 from app.schemas.auth import ForgotPasswordIn, ResetPasswordIn
 from app.core.config import settings
 from app.services.auth_service import AuthService
+from app.domain.user_model import User
+from app.domain.enums import UserStatus
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/login", response_model=TokenOut)
 async def login(data: LogIn, request: Request, session: AsyncSession = Depends(get_session)):
+    q = await session.execute(
+        select(User).where(func.lower(User.email) == data.email.strip().lower())
+    )
+    user = q.scalar_one_or_none()
+    if user and user.status == UserStatus.inactive:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "ACCOUNT_INACTIVE", "message": "A conta está desativada. Entre em contato para recuperar o acesso."}
+        )
     service = AuthService(session)
     try:
         token = await service.login(data.email, data.password, request)
