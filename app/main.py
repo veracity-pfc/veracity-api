@@ -50,7 +50,7 @@ app = FastAPI(title="Veracity API", version="1.0", debug=False, lifespan=lifespa
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
