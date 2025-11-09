@@ -1,2 +1,12 @@
-.env 
-/venv
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+htmlcov/
+.coverage*
+*.pyc
+
+.env
+.env.*
+*.pyc
+*.pyc
