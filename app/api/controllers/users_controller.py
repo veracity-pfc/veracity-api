@@ -1,9 +1,9 @@
 import re
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, Body, HTTPException, Query
-from sqlalchemy import select, update, delete, func, and_
+from sqlalchemy import select, update, delete, func, and_, or_, desc
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Literal
+from typing import Literal, Optional, Dict, Any, List, Tuple
 from secrets import randbelow
 from app.api.deps import get_current_user
 from app.core.database import get_session as get_db
@@ -16,204 +16,165 @@ from app.domain.password_reset import PasswordReset
 from app.domain.audit_model import AuditLog
 from app.domain.analysis_model import Analysis
 from app.domain.enums import AnalysisType
-from app.domain.pending_email_change_model import PendingEmailChange
 
 router = APIRouter(prefix="/user", tags=["user"])
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 def _quotas():
-    return {"urls": settings.user_url_limit, "images": settings.user_image_limit}
+  return {"urls": settings.user_url_limit, "images": settings.user_image_limit}
+
+def _parse_date_only(s: str) -> datetime:
+  s = s.strip()
+  try:
+    d = datetime.fromisoformat(s.replace("Z", ""))
+    if d.tzinfo is None:
+      d = d.replace(tzinfo=timezone.utc)
+    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+  except Exception:
+    try:
+      d2 = datetime.strptime(s[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+      return d2
+    except Exception:
+      raise HTTPException(status_code=400, detail="Parâmetro de data inválido.")
 
 @router.get("/profile")
 async def get_profile(
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db),
+  user: User = Depends(get_current_user),
+  session: AsyncSession = Depends(get_db),
 ):
-    now = datetime.now(timezone.utc)
-    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+  now = datetime.now(timezone.utc)
+  start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+  end = start + timedelta(days=1)
+
+  q_today = await session.execute(
+    select(Analysis.analysis_type, func.count(Analysis.id))
+    .where(Analysis.user_id == user.id, Analysis.created_at >= start, Analysis.created_at < end)
+    .group_by(Analysis.analysis_type)
+  )
+  today_map = {r[0]: r[1] for r in q_today.all()}
+
+  q_all = await session.execute(
+    select(Analysis.analysis_type, func.count(Analysis.id))
+    .where(Analysis.user_id == user.id)
+    .group_by(Analysis.analysis_type)
+  )
+  total_map = {r[0]: r[1] for r in q_all.all()}
+
+  quotas = _quotas()
+  remaining = {
+    "urls": max(int(quotas["urls"]) - int(today_map.get(AnalysisType.url, 0)), 0),
+    "images": max(int(quotas["images"]) - int(today_map.get(AnalysisType.image, 0)), 0),
+  }
+
+  return {
+    "id": str(user.id),
+    "name": user.name,
+    "email": user.email,
+    "stats": {
+      "remaining": remaining,
+      "performed": {
+        "urls": int(total_map.get(AnalysisType.url, 0)),
+        "images": int(total_map.get(AnalysisType.image, 0)),
+      },
+    },
+  }
+
+@router.get("/history")
+async def user_history(
+  user: User = Depends(get_current_user),
+  session: AsyncSession = Depends(get_db),
+  page: int = Query(1, ge=1),
+  page_size: int = Query(6, ge=1, le=100),
+  q: Optional[str] = Query(None),
+  status: Optional[str] = Query(None),
+  analysis_type: Optional[Literal["url", "image"]] = Query(None),
+  date_from: Optional[str] = Query(None),
+  date_to: Optional[str] = Query(None),
+):
+  start = None
+  end = None
+  if date_from and not date_to:
+    start = _parse_date_only(date_from)
     end = start + timedelta(days=1)
+  elif date_to and not date_from:
+    start = _parse_date_only(date_to)
+    end = start + timedelta(days=1)
+  elif date_from and date_to:
+    start = _parse_date_only(date_from)
+    end_day = _parse_date_only(date_to)
+    if end_day < start:
+      raise HTTPException(status_code=400, detail="Data final não pode ser anterior à data inicial.")
+    end = end_day + timedelta(days=1)
 
-    q_today = await session.execute(
-        select(Analysis.analysis_type, func.count(Analysis.id))
-        .where(Analysis.user_id == user.id, Analysis.created_at >= start, Analysis.created_at <= end)
-        .group_by(Analysis.analysis_type)
+  stmt = select(
+    Analysis.id,
+    Analysis.created_at,
+    Analysis.analysis_type,
+    Analysis.label,
+  ).where(Analysis.user_id == user.id)
+
+  if analysis_type:
+    stmt = stmt.where(Analysis.analysis_type == analysis_type)  # type: ignore
+  if status:
+    stmt = stmt.where(func.lower(Analysis.label) == func.lower(status))
+  if q:
+    like = f"%{q}%"
+    stmt = stmt.where(func.lower(Analysis.label).like(func.lower(like)))
+  if start and end:
+    stmt = stmt.where(Analysis.created_at >= start, Analysis.created_at < end)
+
+  total = await session.execute(stmt.with_only_columns(func.count()).order_by(None))
+  total_count = int(total.scalar_one() or 0)
+  pages = max((total_count + page_size - 1) // page_size, 1)
+
+  rows = await session.execute(
+    stmt.order_by(desc(Analysis.created_at)).limit(page_size).offset((page - 1) * page_size)
+  )
+  base: List[Tuple[Any, ...]] = rows.all()
+
+  ids: List[str] = [str(r[0]) for r in base]
+  type_map: Dict[str, str] = {str(r[0]): r[2] for r in base}
+
+  url_sources: Dict[str, str] = {}
+  if ids:
+    q_urls = await session.execute(
+      select(UrlAnalysis.analysis_id, UrlAnalysis.url).where(UrlAnalysis.analysis_id.in_(ids))
     )
-    today_map = {r[0]: r[1] for r in q_today.all()}
+    for aid, url in q_urls.all():
+      if url:
+        url_sources[str(aid)] = url
 
-    q_all = await session.execute(
-        select(Analysis.analysis_type, func.count(Analysis.id))
-        .where(Analysis.user_id == user.id)
-        .group_by(Analysis.analysis_type)
+  image_sources: Dict[str, str] = {}
+  if ids:
+    q_imgs = await session.execute(
+      select(
+        ImageAnalysis.analysis_id,
+        ImageAnalysis.meta["filename"].astext
+      ).where(ImageAnalysis.analysis_id.in_(ids))
     )
-    total_map = {r[0]: r[1] for r in q_all.all()}
+    for aid, name in q_imgs.all():
+      if name:
+        image_sources[str(aid)] = name
 
-    quotas = _quotas()
-    remaining = {
-        "urls": max(int(quotas["urls"]) - int(today_map.get(AnalysisType.url, 0)), 0),
-        "images": max(int(quotas["images"]) - int(today_map.get(AnalysisType.image, 0)), 0),
-    }
-
-    return {
-        "id": str(user.id),
-        "name": user.name,
-        "email": user.email,
-        "stats": {
-            "remaining": remaining,
-            "performed": {
-                "urls": int(total_map.get(AnalysisType.url, 0)),
-                "images": int(total_map.get(AnalysisType.image, 0)),
-            },
-        },
-    }
-
-@router.patch("/profile/name")
-async def update_name(
-    payload: dict = Body(...),
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db),
-):
-    new_name = (payload.get("name") or "").strip()
-    if len(new_name) < 3 or len(new_name) > 30:
-        raise HTTPException(status_code=400, detail="Nome deve ter entre 3 e 30 caracteres.")
-    await session.execute(update(User).where(User.id == user.id).values(name=new_name))
-    await session.execute(
-        AuditLog.__table__.insert().values(
-            user_id=user.id,
-            action="user.update_name",
-            resource="/user/profile/name",
-            success=True,
-            details={"name": new_name},
-        )
+  items = []
+  for r in base:
+    aid = str(r[0])
+    atype = type_map[aid]
+    if atype == AnalysisType.url:
+      source = url_sources.get(aid)
+    elif atype == AnalysisType.image:
+      source = image_sources.get(aid)
+    else:
+      source = None
+    items.append(
+      {
+        "id": aid,
+        "created_at": r[1].astimezone(timezone.utc).isoformat(),
+        "analysis_type": atype,
+        "source": source,
+        "label": r[3],
+      }
     )
-    await session.commit()
-    return {"ok": True, "name": new_name}
 
-@router.patch("/profile/name", name="validate_name")
-async def validate_name_only(
-    payload: dict = Body(...),
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db),
-    validate_only: bool = Query(False),
-):
-    if not validate_only:
-        raise HTTPException(status_code=404, detail="Not found")
-    new_name = (payload.get("name") or "").strip()
-    if len(new_name) < 3 or len(new_name) > 30:
-        raise HTTPException(status_code=400, detail="Nome deve ter entre 3 e 30 caracteres.")
-    return {"ok": True}
-
-@router.post("/profile/email-change/request")
-async def request_email_change(
-    payload: dict = Body(...),
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db),
-):
-    new_email = (payload.get("email") or "").strip().lower()
-    if not EMAIL_RE.fullmatch(new_email):
-        raise HTTPException(status_code=400, detail="E-mail inválido.")
-    exists = await session.execute(select(User.id).where(func.lower(User.email) == new_email))
-    if exists.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="E-mail já cadastrado.")
-    prev = await session.execute(select(PendingEmailChange).where(PendingEmailChange.user_id == user.id))
-    old = prev.scalar_one_or_none()
-    if old:
-        await session.execute(delete(PendingEmailChange).where(PendingEmailChange.id == old.id))
-
-    code = f"{randbelow(1000000):06d}"
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
-    rec = PendingEmailChange(user_id=user.id, new_email=new_email, code=code, expires_at=expires_at)
-    session.add(rec)
-    await session.flush()
-
-    await session.execute(
-        AuditLog.__table__.insert().values(
-            user_id=user.id,
-            action="user.request_email_change",
-            resource="/user/profile/email-change/request",
-            success=True,
-            details={"new_email": new_email},
-        )
-    )
-    await session.commit()
-    return {"ok": True, "requires_verification": True}
-
-@router.post("/profile/email-change/confirm")
-async def confirm_email_change(
-    payload: dict = Body(...),
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db),
-):
-    code = (payload.get("code") or "").strip()
-    email = (payload.get("email") or "").strip().lower()
-
-    q = await session.execute(
-        select(PendingEmailChange).where(
-            and_(PendingEmailChange.user_id == user.id, func.lower(PendingEmailChange.new_email) == email)
-        )
-    )
-    pending = q.scalar_one_or_none()
-    if not pending:
-        raise HTTPException(status_code=400, detail="Solicitação não encontrada.")
-    now = datetime.now(timezone.utc)
-    if pending.expires_at < now:
-        await session.execute(delete(PendingEmailChange).where(PendingEmailChange.id == pending.id))
-        await session.commit()
-        raise HTTPException(status_code=400, detail="Código expirado.")
-
-    if pending.code != code:
-        raise HTTPException(status_code=400, detail="Código inválido.")
-
-    await session.execute(update(User).where(User.id == user.id).values(email=pending.new_email))
-    await session.execute(delete(PendingEmailChange).where(PendingEmailChange.id == pending.id))
-    await session.execute(
-        AuditLog.__table__.insert().values(
-            user_id=user.id,
-            action="user.confirm_email_change",
-            resource="/user/profile/email-change/confirm",
-            success=True,
-            details={"new_email": pending.new_email},
-        )
-    )
-    await session.commit()
-    return {"ok": True, "email": pending.new_email}
-
-@router.patch("/account")
-async def inactivate_account(
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db),
-):
-    await session.execute(update(User).where(User.id == user.id).values(status=UserStatus.inactive))
-    await session.execute(
-        AuditLog.__table__.insert().values(
-            user_id=user.id,
-            action="user.inactivate",
-            resource="/user/account",
-            success=True,
-        )
-    )
-    await session.commit()
-    return {"ok": True, "status": "inactive"}
-
-@router.delete("/account")
-async def delete_account(
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db),
-):
-    await session.execute(update(AuditLog).where(AuditLog.user_id == user.id).values(user_id=None))
-    await session.execute(delete(PasswordReset).where(PasswordReset.user_id == user.id))
-    await session.execute(update(UrlAnalysis).where(UrlAnalysis.user_id == user.id).values(user_id=None))
-    await session.execute(update(ImageAnalysis).where(ImageAnalysis.user_id == user.id).values(user_id=None))
-    await session.execute(update(Analysis).where(Analysis.user_id == user.id).values(user_id=None))
-    await session.execute(delete(PendingEmailChange).where(PendingEmailChange.user_id == user.id))
-    await session.execute(delete(User).where(User.id == user.id))
-    await session.execute(
-        AuditLog.__table__.insert().values(
-            user_id=None,
-            action="user.delete",
-            resource="/user/account",
-            success=True,
-        )
-    )
-    await session.commit()
-    return {"ok": True}
+  return {"items": items, "total_pages": pages}
