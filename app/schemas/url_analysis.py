@@ -14,13 +14,13 @@ def has_valid_tld(host: str) -> bool:
     return bool(_TLD_RE.match(tld))
 
 class UrlAnalysisIn(BaseModel):
-    url: str 
+    url: str
 
     @field_validator("url")
     @classmethod
     def validate_url(cls, v: str):
-        if len(v) > 120:
-            raise ValueError("A URL não pode exceder 120 caracteres")
+        if len(v) > 200:
+            raise ValueError("A URL deve ter no máximo 200 caracteres.")
         if not (v.startswith("http://") or v.startswith("https://")):
             raise ValueError("A URL deve começar com http:// ou https://")
         parts = urlsplit(v)
