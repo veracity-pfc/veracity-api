@@ -1,21 +1,17 @@
 import re
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, Body, HTTPException, Query
-from sqlalchemy import select, update, delete, func, and_, or_, desc
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select, func,  or_, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Literal, Optional, Dict, Any, List, Tuple
-from secrets import randbelow
 from app.api.deps import get_current_user
 from app.core.database import get_session as get_db
 from app.core.config import settings
 from app.domain.user_model import User
-from app.domain.enums import UserStatus
 from app.domain.url_analysis_model import UrlAnalysis
 from app.domain.image_analysis_model import ImageAnalysis
-from app.domain.password_reset import PasswordReset
-from app.domain.audit_model import AuditLog
 from app.domain.analysis_model import Analysis
-from app.domain.enums import AnalysisType
+from app.domain.enums import AnalysisType, RiskLabel 
 
 router = APIRouter(prefix="/user", tags=["user"])
 
@@ -115,12 +111,31 @@ async def user_history(
   ).where(Analysis.user_id == user.id)
 
   if analysis_type:
-    stmt = stmt.where(Analysis.analysis_type == analysis_type)  # type: ignore
+    stmt = stmt.where(Analysis.analysis_type == analysis_type)  
+
   if status:
-    stmt = stmt.where(func.lower(Analysis.label) == func.lower(status))
+    try:
+      status_enum = RiskLabel(status)
+    except ValueError:
+      raise HTTPException(status_code=400, detail="Parâmetro de status inválido.")
+    stmt = stmt.where(Analysis.label == status_enum)
+
   if q:
-    like = f"%{q}%"
-    stmt = stmt.where(func.lower(Analysis.label).like(func.lower(like)))
+    like = f"%{q.lower()}%"
+    url_sub = (
+      select(UrlAnalysis.analysis_id)
+      .where(
+        or_(
+          func.lower(UrlAnalysis.url).like(like),
+        )
+      )
+    )
+    img_sub = (
+      select(ImageAnalysis.analysis_id)
+      .where(func.lower(ImageAnalysis.meta["filename"].astext).like(like))
+    )
+    stmt = stmt.where(or_(Analysis.id.in_(url_sub), Analysis.id.in_(img_sub)))
+
   if start and end:
     stmt = stmt.where(Analysis.created_at >= start, Analysis.created_at < end)
 
