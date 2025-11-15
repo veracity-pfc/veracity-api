@@ -3,7 +3,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional, Sequence
 
-from sqlalchemy import String, bindparam, cast, func, or_, select, text
+from sqlalchemy import (
+    String,
+    and_,
+    bindparam,
+    cast,
+    func,
+    or_,
+    select,
+    text,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.ai_model import AIResponse
@@ -23,20 +32,20 @@ class AnalysisRepository:
         page: int,
         page_size: int,
         q: Optional[str],
-        date_from: Optional[str],
-        date_to: Optional[str],
+        date_from: Optional[datetime],
+        date_to: Optional[datetime],
         status: Optional[RiskLabel],
         analysis_type: Optional[AnalysisType],
     ) -> tuple[int, Sequence[tuple]]:
         filters = [Analysis.user_id == user_id]
 
-        if status:
+        if status is not None:
             filters.append(Analysis.label == status)
-        if analysis_type:
+        if analysis_type is not None:
             filters.append(Analysis.analysis_type == analysis_type)
-        if date_from:
+        if date_from is not None:
             filters.append(Analysis.created_at >= date_from)
-        if date_to:
+        if date_to is not None:
             filters.append(Analysis.created_at < date_to)
         if q:
             like = f"%{q.lower()}%"
@@ -61,7 +70,7 @@ class AnalysisRepository:
                 source_expr.label("source"),
             )
             .join(ImageAnalysis, ImageAnalysis.analysis_id == Analysis.id, isouter=True)
-            .where(*filters)
+            .where(and_(*filters))
             .order_by(Analysis.created_at.desc(), Analysis.id.desc())
         )
 

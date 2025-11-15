@@ -21,7 +21,7 @@ async def list_history(
     page_size: int = Query(6, ge=1, le=50),
     q: Optional[str] = Query(
         None,
-        description="Busca livre por URL, nome da imagem ou status",
+        description="Busca livre por URL ou nome da imagem",
     ),
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
@@ -30,14 +30,20 @@ async def list_history(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
+    if date_from and date_to and date_to < date_from:
+        raise HTTPException(
+            status_code=400,
+            detail="Data final não pode ser anterior à data inicial.",
+        )
+
     svc = HistoryService(session)
     return await svc.list_for_user(
         user_id=str(user.id),
         page=page,
         page_size=page_size,
         q=q,
-        date_from=date_from.isoformat() if date_from else None,
-        date_to=date_to.isoformat() if date_to else None,
+        date_from=date_from,
+        date_to=date_to,
         status=status,
         analysis_type=analysis_type,
     )
