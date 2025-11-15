@@ -1,37 +1,39 @@
 from __future__ import annotations
+
 import json
 import logging
 import re
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
+
 import httpx
+
 from app.core.config import settings
+from app.core.constants import IANA_TTL_SEC, IANA_URL, GENERIC_ANALYSIS_ERROR, HAS_DIGIT_RE
 
 logger = logging.getLogger("veracity.ai_service")
 
-_IANA_TLDS: set[str] | None = None
-_IANA_FETCH_TS: float | None = None
-_IANA_TTL_SEC = 24 * 60 * 60
-_IANA_URL = "https://data.iana.org/TLD/tlds-alpha-by-domain.txt"
-_HAS_DIGIT_RE = re.compile(r"\d")
 
 async def _load_iana_tlds(client: httpx.AsyncClient) -> set[str]:
     global _IANA_TLDS, _IANA_FETCH_TS
     now = time.time()
-    if _IANA_TLDS is not None and _IANA_FETCH_TS and (now - _IANA_FETCH_TS) < _IANA_TTL_SEC:
+    if _IANA_TLDS is not None and _IANA_FETCH_TS and (now - _IANA_FETCH_TS) < IANA_TTL_SEC:
         return _IANA_TLDS
+
     t0 = time.perf_counter()
-    r = await client.get(_IANA_URL, timeout=settings.http_timeout)
+    r = await client.get(IANA_URL, timeout=settings.http_timeout)
     ms = round((time.perf_counter() - t0) * 1000, 1)
     logger.info("iana.tlds.fetch", extra={"status": r.status_code, "ms": ms})
     r.raise_for_status()
+
     lines = r.text.splitlines()
     tlds = {ln.strip().lower() for ln in lines if ln and not ln.startswith("#")}
     _IANA_TLDS, _IANA_FETCH_TS = tlds, now
     logger.info("iana.tlds.loaded", extra={"count": len(tlds)})
     return tlds
+
 
 @dataclass(slots=True)
 class URLSignals:
@@ -47,6 +49,7 @@ class URLSignals:
     is_punycode: bool
     path_len: int
     query_len: int
+
 
 def _compute_signals(
     url: str,
@@ -68,11 +71,12 @@ def _compute_signals(
         dns_ok=dns_ok,
         subdomain_count=sub_count,
         has_hyphen=("-" in host) or ("_" in host),
-        has_digits=bool(_HAS_DIGIT_RE.search(host)),
+        has_digits=bool(HAS_DIGIT_RE.search(host)),
         is_punycode=host.startswith("xn--"),
         path_len=len(parts.path or ""),
         query_len=len(parts.query or ""),
     )
+
 
 def _build_prompt(gsb_json: Dict[str, Any], sig: URLSignals) -> str:
     gsb = json.dumps(gsb_json or {}, ensure_ascii=False)
@@ -94,6 +98,7 @@ def _build_prompt(gsb_json: Dict[str, Any], sig: URLSignals) -> str:
         '"recommendations": ["recomendação 1", "recomendação 2"] }\n'
     )
 
+
 async def _hf_chat(
     client: httpx.AsyncClient,
     prompt: str,
@@ -111,82 +116,23 @@ async def _hf_chat(
     }
     t0 = time.perf_counter()
     r = await client.post(url, json=body, headers=headers, timeout=settings.http_timeout)
-    logger.info("hf.response", extra={
-        "status": r.status_code,
-        "ms": round((time.perf_counter() - t0) * 1000, 1),
-        "preview": r.text[:240].replace("\n", ""),
-    })
-    if r.status_code >= 400:
-        return {"error": {"status": r.status_code, "text": r.text}}
+    logger.info(
+        "hf.response",
+        extra={
+            "status": r.status_code,
+            "ms": round((time.perf_counter() - t0) * 1000, 1),
+        },
+    )
+    r.raise_for_status()
 
     jr = r.json()
     txt = jr.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
     s, e = txt.find("{"), txt.rfind("}")
-    content = txt[s:e + 1] if s != -1 and e != -1 else "{}"
-    try:
-        out = json.loads(content)
-        logger.info("hf.parsed_json", extra={"ok": True, "len": len(content)})
-        return out
-    except Exception:
-        logger.warning("hf.parse_failed", extra={"len": len(txt)})
-        return {}
+    content = txt[s : e + 1] if s != -1 and e != -1 else "{}"
+    out = json.loads(content)
+    logger.info("hf.parsed_json", extra={"len": len(content)})
+    return out
 
-def _fallback_from_signals(sig: URLSignals, gsb_json: Dict[str, Any]) -> Dict[str, Any]:
-    has_gsb = bool(gsb_json and gsb_json.get("matches"))
-    hints = list(filter(None, [
-        "o endereço já aparece em listas de alerta de segurança" if has_gsb else None,
-        "a terminação do endereço (como .com) não é reconhecida" if not sig.tld_in_iana else None,
-        "o nome do site usa caracteres pouco comuns que podem confundir" if sig.is_punycode else None,
-        "há muitos pontos no endereço, algo comum em falsificações" if sig.subdomain_count >= 2 else None,
-        "o nome do site tem hífens ou números, típico de imitações" if (sig.has_hyphen or sig.has_digits) else None,
-        "o link é longo demais, o que pode esconder o destino real" if (sig.path_len > 20 or sig.query_len > 0) else None,
-        "o endereço não está respondendo como um site ativo" if not sig.dns_ok else None,
-    ]))
-    strong = any([not sig.tld_in_iana, sig.is_punycode, sig.subdomain_count >= 2, not sig.dns_ok])
-    weak   = any([sig.has_hyphen, sig.has_digits, sig.path_len > 20, sig.query_len > 0])
-    classification = ("Malicioso" if has_gsb else ("Suspeito" if (strong or weak) else "Seguro"))
-    if hints:
-        expl = (
-            f"Este link merece atenção porque {', '.join(hints[:-1])}"
-            f"{(' e ' + hints[-1]) if len(hints) > 1 else ''}."
-        )
-    else:
-        expl = "O endereço parece consistente para uso comum e não mostra sinais de fraude."
-    tail = {
-        "Malicioso": " Recomendamos tratá-lo como perigoso.",
-        "Seguro": ".",
-        "Suspeito": ". Se não for um site que você conhece, evite interagir.",
-    }[classification]
-    expl = expl.rstrip(".") + tail
-    recommendations = {
-        "Malicioso": ["Não clique nem insira dados", "Bloqueie ou reporte este endereço"],
-        "Seguro": ["Verifique o cadeado do navegador", "Mantenha navegador e antivírus atualizados"],
-        "Suspeito": ["Evite logins e downloads", "Confirme o site por um canal oficial"],
-    }[classification]
-    return {"classification": classification, "explanation": expl, "recommendations": recommendations}
-
-
-def _extract_ai_generated(se: Dict[str, Any]) -> float:
-    candidates = []
-    try:
-        if isinstance(se, dict):
-            t = se.get("type") or {}
-            candidates.append(t.get("ai_generated"))
-            candidates.append(se.get("ai_generated"))
-    except Exception:
-        pass
-
-    for v in candidates:
-        try:
-            if v is None:
-                continue
-            x = float(v)
-            if x < 0: x = 0.0
-            if x > 1: x = 1.0
-            return x
-        except Exception:
-            continue
-    return 0.0
 
 def _build_image_prompt_full(filename: str, mime: str, se_full: Dict[str, Any]) -> str:
     full_json = json.dumps(se_full or {}, ensure_ascii=False)
@@ -214,36 +160,10 @@ def _build_image_prompt_full(filename: str, mime: str, se_full: Dict[str, Any]) 
         "- Traga 2 a 4 recomendações práticas, curtas, no imperativo (ex.: 'Peça autorização antes de publicar').\n"
         "- Português do Brasil.\n\n"
         "Formato de saída (obrigatório): responda ESTRITAMENTE em JSON válido com as chaves:\n"
-        '{\"explanation\": \"texto claro para leigos (3–5 frases)\", '
-        '\"recommendations\": [\"recomendação 1\", \"recomendação 2\"]}\n"'
+        '{ "explanation": "texto claro para leigos (3–5 frases)", '
+        '"recommendations": ["recomendação 1", "recomendação 2"] }\n'
     )
 
-def _fallback_from_image(se: Dict[str, Any]) -> Dict[str, Any]:
-    ai_generated = _extract_ai_generated(se)
-    text = se.get("text") or {}
-    quality = (se.get("quality") or {}).get("score")
-
-    hints = []
-    if ai_generated >= 0.60:
-        hints.append(f"o detector indica probabilidade alta de geração por IA (score {ai_generated:.2f})")
-    if text.get("has_artificial", 0):
-        hints.append("há indícios de texto artificial na imagem")
-    if quality is not None and quality < 0.35:
-        hints.append("a qualidade baixa pode esconder sinais de edição")
-
-    if hints:
-        exp = f"Esta imagem requer atenção porque {', '.join(hints[:-1])}{(' e ' + hints[-1]) if len(hints) > 1 else ''}."
-    else:
-        exp = "A imagem não apresenta sinais relevantes de manipulação segundo os indicadores avaliados."
-
-    return {
-        "explanation": exp,
-        "recommendations": [
-            "Procure a fonte original e versões anteriores",
-            "Evite compartilhar sem contexto",
-            "Se necessário, valide metadados e contexto",
-        ],
-    }
 
 class AIService:
     __slots__ = ("client",)
@@ -251,22 +171,53 @@ class AIService:
     def __init__(self, client: Optional[httpx.AsyncClient] = None):
         self.client = client
 
-    async def generate_for_url(self, *, url: str, tld_ok: bool, dns_ok: bool, gsb_json: Dict[str, Any]) -> Dict[str, Any]:
+    async def generate_for_url(
+        self,
+        *,
+        url: str,
+        tld_ok: bool,
+        dns_ok: bool,
+        gsb_json: Dict[str, Any],
+    ) -> Dict[str, Any]:
         client = self.client or httpx.AsyncClient(timeout=settings.http_timeout)
         close_client = self.client is None
+
         try:
-            iana_tlds = await _load_iana_tlds(client)
+            try:
+                iana_tlds = await _load_iana_tlds(client)
+            except Exception as exc:
+                logger.error(
+                    "iana.tlds.error",
+                    extra={"error_type": type(exc).__name__},
+                )
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
+
             sig = _compute_signals(url, iana_tlds, tld_ok_input=tld_ok, dns_ok=dns_ok)
             prompt = _build_prompt(gsb_json or {}, sig)
-            for temperature, suffix in (
-                (0.16, ""),
-                (0.10, "\nResponda estritamente no JSON solicitado, sem texto fora do objeto."),
+
+            try:
+                out = await _hf_chat(
+                    client,
+                    prompt,
+                    temperature=0.16,
+                    max_tokens=360,
+                )
+            except Exception as exc:
+                logger.error(
+                    "hf.chat.url.error",
+                    extra={"error_type": type(exc).__name__},
+                )
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
+
+            if not isinstance(out, dict) or not all(
+                k in out for k in ("classification", "explanation", "recommendations")
             ):
-                out = await _hf_chat(client, prompt + suffix, temperature=temperature, max_tokens=360)
-                if all(k in out for k in ("classification", "explanation", "recommendations")):
-                    out["explanation"] = " ".join(str(out.get("explanation", "")).split())
-                    return out
-            return _fallback_from_signals(sig, gsb_json or {})
+                logger.error("hf.chat.url.invalid_payload")
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
+
+            explanation = " ".join(str(out.get("explanation", "")).split())
+            out["explanation"] = explanation
+            return out
         finally:
             if close_client:
                 await client.aclose()
@@ -279,20 +230,44 @@ class AIService:
         detection_json: Dict[str, Any],
     ) -> Dict[str, Any]:
         se_full = detection_json or {}
-
         client = self.client or httpx.AsyncClient(timeout=settings.http_timeout)
         close_client = self.client is None
+
         try:
             prompt = _build_image_prompt_full(filename, mime, se_full)
-            for temperature, suffix in (
-                (0.16, ""),
-                (0.10, "\nResponda estritamente no JSON solicitado, sem texto fora do objeto."),
+
+            try:
+                out = await _hf_chat(
+                    client,
+                    prompt,
+                    temperature=0.16,
+                    max_tokens=480,
+                )
+            except Exception as exc:
+                logger.error(
+                    "hf.chat.image.error",
+                    extra={"error_type": type(exc).__name__},
+                )
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
+
+            if not isinstance(out, dict) or not all(
+                k in out for k in ("explanation", "recommendations")
             ):
-                out = await _hf_chat(client, prompt + suffix, temperature=temperature, max_tokens=480)
-                if all(k in out for k in ("explanation", "recommendations")):
-                    out["explanation"] = " ".join(str(out.get("explanation", "")).split())
-                    return out
-            return _fallback_from_image(se_full)
+                logger.error("hf.chat.image.invalid_payload")
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
+
+            explanation = " ".join(str(out.get("explanation", "")).split())
+            out["explanation"] = explanation
+
+            recs = out.get("recommendations") or []
+            if isinstance(recs, list):
+                out["recommendations"] = [str(r).strip() for r in recs if str(r).strip()]
+            elif recs:
+                out["recommendations"] = [str(recs).strip()]
+            else:
+                out["recommendations"] = []
+
+            return out
         finally:
             if close_client:
                 await client.aclose()

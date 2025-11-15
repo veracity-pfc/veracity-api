@@ -1,26 +1,36 @@
 from __future__ import annotations
-import asyncio, json, logging, time
+
+import asyncio
+import json
+import logging
+import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlsplit
+
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-from datetime import datetime, timezone
-from app.domain.ai_model import AIResponse
-from app.core.config import settings
-from app.domain.analysis_model import Analysis
-from app.domain.url_analysis_model import UrlAnalysis
-from app.domain.enums import AnalysisType, AnalysisStatus, RiskLabel
+
 from app.api.deps import ip_hash_from_request
+from app.core.config import settings
+from app.core.constants import DNS_TIMEOUT, GENERIC_ANALYSIS_ERROR
+from app.domain.ai_model import AIResponse
+from app.domain.analysis_model import Analysis
+from app.domain.audit_model import AuditLog
+from app.domain.enums import AnalysisStatus, AnalysisType, RiskLabel
+from app.domain.url_analysis_model import UrlAnalysis
 from app.repositories.audit_repo import AuditRepository
-from app.services.ai_service import AIService
 from app.schemas.url_analysis import has_valid_tld
+from app.services.ai_service import AIService
+from app.services.common import resolve_user_id
+from app.services.utils.quota_utils import check_daily_limit
 
 logger = logging.getLogger("veracity.link_analysis")
-DNS_TIMEOUT = 1.2
+
 
 def only_host(url: str) -> str:
     return (urlsplit(url).hostname or "").lower()
+
 
 async def dns_ok(host: str) -> bool:
     loop = asyncio.get_running_loop()
@@ -30,64 +40,16 @@ async def dns_ok(host: str) -> bool:
     except Exception:
         return False
 
+
 def map_pt_label_to_enum(s: str) -> RiskLabel:
     s = (s or "").strip().lower()
-    if s.startswith("segur"):   return RiskLabel.safe
-    if s.startswith("suspe"):   return RiskLabel.suspicious
-    if s.startswith("malic"):   return RiskLabel.malicious
+    if s.startswith("segur"):
+        return RiskLabel.safe
+    if s.startswith("suspe"):
+        return RiskLabel.suspicious
+    if s.startswith("malic"):
+        return RiskLabel.malicious
     return RiskLabel.unknown
-
-
-def _resolve_user_id(request, explicit_user_id: Optional[str]) -> Optional[str]:
-    if explicit_user_id:
-        return explicit_user_id
-    try:
-        st = getattr(request, "state", None)
-        cand = None
-        if st is not None:
-            u = getattr(st, "user", None)
-            if hasattr(u, "id") and u.id:
-                cand = u.id
-            if not cand:
-                cand = getattr(st, "user_id", None)
-        if not cand:
-            u2 = getattr(request, "user", None)
-            if hasattr(u2, "id") and u2.id:
-                cand = u2.id
-            elif isinstance(u2, str) and u2:
-                cand = u2
-        if cand:
-            return str(cand)
-    except Exception:
-        pass
-    return None
-
-async def _count_today(session: AsyncSession, *, user_id: Optional[str], actor_hash: Optional[str]) -> int:
-    now = datetime.now(timezone.utc)
-    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    q = select(func.count(Analysis.id)).where(
-        Analysis.analysis_type == AnalysisType.url,
-        Analysis.created_at >= start,
-    )
-    if user_id:
-        q = q.where(Analysis.user_id == user_id)
-    else:
-        q = q.where(Analysis.user_id.is_(None), Analysis.actor_ip_hash == actor_hash)
-    return (await session.execute(q)).scalar_one()
-
-async def _check_daily_limit(session: AsyncSession, *, user_id: Optional[str], actor_hash: Optional[str]) -> Tuple[int, int, str]:
-    if settings.disable_limits:
-        return (0, 0, "disabled")
-    used = await _count_today(session, user_id=user_id, actor_hash=actor_hash)
-    if user_id:
-        limit = settings.user_url_limit
-        scope = "user"
-    else:
-        limit = settings.anon_url_limit
-        scope = "anon"
-    if used >= limit:
-        raise ValueError("Limite diário de análises de URLs atingido.")
-    return (used, limit, scope)
 
 
 async def gsb_check(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
@@ -95,8 +57,10 @@ async def gsb_check(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
         "client": {"clientId": "veracity", "clientVersion": "1.0"},
         "threatInfo": {
             "threatTypes": [
-                "MALWARE", "SOCIAL_ENGINEERING",
-                "UNWANTED_SOFTWARE", "POTENTIALLY_HARMFUL_APPLICATION"
+                "MALWARE",
+                "SOCIAL_ENGINEERING",
+                "UNWANTED_SOFTWARE",
+                "POTENTIALLY_HARMFUL_APPLICATION",
             ],
             "platformTypes": ["ANY_PLATFORM"],
             "threatEntryTypes": ["URL"],
@@ -104,21 +68,45 @@ async def gsb_check(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
         },
     }
     t0 = time.perf_counter()
-    r = await client.post(
-        f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={settings.gsb_api_key}",
-        json=body,
-    )
+    try:
+        r = await client.post(
+            f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={settings.gsb_api_key}",
+            json=body,
+        )
+    except httpx.HTTPError as exc:
+        logger.error(
+            "gsb.request_error",
+            extra={"error_type": type(exc).__name__},
+        )
+        raise ValueError(GENERIC_ANALYSIS_ERROR)
+
     dt = round((time.perf_counter() - t0) * 1000, 1)
-    logger.info("gsb.response", extra={"status": r.status_code, "ms": dt, "preview": r.text[:240].replace("\n","")})
+    logger.info("gsb.response", extra={"status": r.status_code, "ms": dt})
+
     if r.status_code >= 400:
-        return {"error": {"status": r.status_code, "text": r.text}}
-    data = r.json() or {"matches": []}
-    fm = (data.get("matches") or [None])[0]
-    logger.info("gsb.matches", extra={
-        "has_matches": bool(data.get("matches")),
-        "count": len(data.get("matches", [])),
-        "first_match_preview": json.dumps(fm, ensure_ascii=False)[:240] if fm else None
-    })
+        logger.error(
+            "gsb.status_error",
+            extra={"status": r.status_code},
+        )
+        raise ValueError(GENERIC_ANALYSIS_ERROR)
+
+    try:
+        data = r.json() or {"matches": []}
+    except ValueError:
+        logger.error("gsb.json_error")
+        raise ValueError(GENERIC_ANALYSIS_ERROR)
+
+    first_match = (data.get("matches") or [None])[0]
+    logger.info(
+        "gsb.matches",
+        extra={
+            "has_matches": bool(data.get("matches")),
+            "count": len(data.get("matches", [])),
+            "first_match_preview": json.dumps(first_match, ensure_ascii=False)[:240]
+            if first_match
+            else None,
+        },
+    )
     return data
 
 
@@ -128,9 +116,14 @@ class UrlAnalysisService:
 
     async def analyze(self, *, url_in: str, request, user_id: Optional[str]):
         actor_hash = ip_hash_from_request(request)
-        resolved_user_id = _resolve_user_id(request, user_id)
+        resolved_user_id = resolve_user_id(request, user_id)
 
-        used_today, limit, scope = await _check_daily_limit(self.session, user_id=resolved_user_id, actor_hash=actor_hash)
+        used_today, limit, scope = await check_daily_limit(
+            self.session,
+            AnalysisType.url,
+            user_id=resolved_user_id,
+            actor_hash=actor_hash,
+        )
 
         analysis = Analysis(
             analysis_type=AnalysisType.url,
@@ -143,40 +136,87 @@ class UrlAnalysisService:
         self.session.add(analysis)
         await self.session.flush()
 
-        await AuditRepository(self.session).insert(
-            table=__import__("app.domain.audit_model", fromlist=["AuditLog"]).AuditLog,
+        audit_repo = AuditRepository(self.session)
+
+        await audit_repo.insert(
+            table=AuditLog,
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
             action="analysis.url.create",
             resource=str(analysis.id),
             success=True,
-            details={"source_url": url_in, "quota_used": used_today, "quota_limit": limit, "quota_scope": scope},
+            details={
+                "source_url": url_in,
+                "quota_used": used_today,
+                "quota_limit": limit,
+                "quota_scope": scope,
+            },
         )
 
         host = only_host(url_in)
-        _dns_ok = await dns_ok(host)
-        _tld_ok = has_valid_tld(host)
+        dns_ok_flag = await dns_ok(host)
+        tld_ok = has_valid_tld(host)
 
         timeout = httpx.Timeout(settings.http_timeout)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            gsb_res = await gsb_check(url_in, client)
-            ai_service = AIService(client)
-            ai_json = await ai_service.generate_for_url(
-                url=url_in,
-                tld_ok=_tld_ok,
-                dns_ok=_dns_ok,
-                gsb_json=gsb_res or {},
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                gsb_res = await gsb_check(url_in, client)
+                ai_service = AIService(client)
+                ai_json = await ai_service.generate_for_url(
+                    url=url_in,
+                    tld_ok=tld_ok,
+                    dns_ok=dns_ok_flag,
+                    gsb_json=gsb_res or {},
+                )
+        except ValueError as exc:
+            analysis.status = AnalysisStatus.error
+            await audit_repo.insert(
+                table=AuditLog,
+                user_id=resolved_user_id,
+                actor_ip_hash=actor_hash,
+                action="analysis.url.error",
+                resource=str(analysis.id),
+                success=False,
+                details={
+                    "source_url": url_in,
+                    "reason": "external_service_error",
+                },
             )
+            await self.session.commit()
+            logger.error(
+                "analysis.url.failed",
+                extra={"analysis_id": str(analysis.id), "error_type": type(exc).__name__},
+            )
+            raise ValueError(GENERIC_ANALYSIS_ERROR)
+        except Exception as exc:
+            analysis.status = AnalysisStatus.error
+            await audit_repo.insert(
+                table=AuditLog,
+                user_id=resolved_user_id,
+                actor_ip_hash=actor_hash,
+                action="analysis.url.error",
+                resource=str(analysis.id),
+                success=False,
+                details={
+                    "source_url": url_in,
+                    "reason": "unexpected_error",
+                },
+            )
+            await self.session.commit()
+            logger.error(
+                "analysis.url.unexpected_error",
+                extra={"analysis_id": str(analysis.id), "error_type": type(exc).__name__},
+            )
+            raise ValueError(GENERIC_ANALYSIS_ERROR)
 
         label_enum = map_pt_label_to_enum(ai_json.get("classification", ""))
 
-        from app.domain.url_analysis_model import UrlAnalysis as UrlAnalysisModel
-        url_row = UrlAnalysisModel(
+        url_row = UrlAnalysis(
             analysis_id=analysis.id,
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
             url=url_in,
-            dns_ok=_dns_ok,
+            dns_ok=dns_ok_flag,
             gsb_json=gsb_res,
             ai_json=ai_json,
             risk_label=label_enum.value,
@@ -197,8 +237,8 @@ class UrlAnalysisService:
         analysis.label = label_enum
         analysis.completed_at = datetime.now(timezone.utc)
 
-        await AuditRepository(self.session).insert(
-            table=__import__("app.domain.audit_model", fromlist=["AuditLog"]).AuditLog,
+        await audit_repo.insert(
+            table=AuditLog,
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
             action="analysis.url.finish",
@@ -206,8 +246,8 @@ class UrlAnalysisService:
             success=True,
             details={
                 "label": label_enum.value,
-                "tld_ok": _tld_ok,
-                "dns_ok": _dns_ok,
+                "tld_ok": tld_ok,
+                "dns_ok": dns_ok_flag,
                 "gsb_has_match": bool(gsb_res and gsb_res.get("matches")),
             },
         )
@@ -217,13 +257,16 @@ class UrlAnalysisService:
         used_after = used_today + 1
         remaining = max(0, (limit - used_after)) if limit else 0
 
-        ai_json = dict(ai_json or {})
-        ai_json["quota"] = {
+        ai_json_out: Dict[str, Any] = dict(ai_json or {})
+        ai_json_out["quota"] = {
             "scope": scope,
             "limit": limit,
             "used_today": used_after,
             "remaining_today": remaining,
         }
 
-        logger.info("analysis.done", extra={"analysis_id": str(analysis.id), "label": analysis.label.value})
-        return analysis, url_row, ai_json
+        logger.info(
+            "analysis.url.done",
+            extra={"analysis_id": str(analysis.id), "label": analysis.label.value},
+        )
+        return analysis, url_row, ai_json_out

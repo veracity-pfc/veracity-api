@@ -1,12 +1,15 @@
 from __future__ import annotations
-import html
-import httpx
-from ..core.config import settings
 
-RESEND_API = "https://api.resend.com/emails"
+import html
+
+import httpx
+
+from app.core.config import settings
+from app.core.constants import RESEND_API
 
 class EmailError(RuntimeError):
     pass
+
 
 async def send_email(to: str, subject: str, html_body: str) -> None:
     payload = {
@@ -26,9 +29,10 @@ async def send_email(to: str, subject: str, html_body: str) -> None:
                 err = {"error": r.text}
             raise EmailError(f"Falha ao enviar e-mail: {err}")
 
+
 def verification_email_html(name: str, code: str) -> str:
     name = html.escape(name or "")
-    code_fmt = " ".join(html.escape(code))  
+    code_fmt = " ".join(html.escape(code))
     return f"""
 <!doctype html>
 <html>
@@ -47,6 +51,7 @@ def verification_email_html(name: str, code: str) -> str:
 </html>
     """.strip()
 
+
 def build_contact_email_html(email: str, subject: str, message: str) -> str:
     return (
         "<!doctype html><html><body style='font-family:Arial,sans-serif'>"
@@ -58,6 +63,7 @@ def build_contact_email_html(email: str, subject: str, message: str) -> str:
         "</pre>"
         "</body></html>"
     )
+
 
 def reset_password_email_html(name: str, link: str) -> str:
     name = html.escape(name or "")
@@ -76,4 +82,3 @@ def reset_password_email_html(name: str, link: str) -> str:
   </body>
 </html>
     """.strip()
-

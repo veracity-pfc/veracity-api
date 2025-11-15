@@ -1,28 +1,34 @@
 from __future__ import annotations
-import logging, json
-from typing import Any, Dict, Optional, Tuple
+
+import json
+import logging
 from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
 
-import httpx
 import filetype
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 
-from app.core.config import settings
 from app.api.deps import ip_hash_from_request
-from app.repositories.audit_repo import AuditRepository
-from app.domain.enums import AnalysisType, AnalysisStatus, RiskLabel
-from app.domain.analysis_model import Analysis
-from app.domain.image_analysis_model import ImageAnalysis
+from app.core.config import settings
+from app.core.constants import GENERIC_ANALYSIS_ERROR, ALLOWED_MIMES
 from app.domain.ai_model import AIResponse
+from app.domain.analysis_model import Analysis
+from app.domain.audit_model import AuditLog
+from app.domain.enums import AnalysisStatus, AnalysisType, RiskLabel
+from app.domain.image_analysis_model import ImageAnalysis
+from app.repositories.audit_repo import AuditRepository
 from app.services.ai_service import AIService
+from app.services.common import resolve_user_id
+from app.services.utils.quota_utils import check_daily_limit
 
 logger = logging.getLogger("veracity.image_analysis")
-ALLOWED_MIMES = {"image/png", "image/jpeg"}
+
 
 def _detect_mime(data: bytes) -> str | None:
     kind = filetype.guess(data)
     return (kind and kind.mime) or None
+
 
 def _extract_ai_generated(se: Dict[str, Any]) -> float:
     candidates = []
@@ -40,12 +46,15 @@ def _extract_ai_generated(se: Dict[str, Any]) -> float:
             if v is None:
                 continue
             x = float(v)
-            if x < 0: x = 0.0
-            if x > 1: x = 1.0
+            if x < 0:
+                x = 0.0
+            if x > 1:
+                x = 1.0
             return x
         except Exception:
             continue
     return 0.0
+
 
 def _decide(ai_gen: float) -> Tuple[RiskLabel, str]:
     if ai_gen >= 0.90:
@@ -53,6 +62,7 @@ def _decide(ai_gen: float) -> Tuple[RiskLabel, str]:
     if ai_gen >= 0.60:
         return RiskLabel.suspicious, "ai_generated"
     return RiskLabel.safe, "real"
+
 
 def _pt_label(label: RiskLabel) -> str:
     return {
@@ -62,56 +72,6 @@ def _pt_label(label: RiskLabel) -> str:
         RiskLabel.unknown: "Desconhecido",
     }[label]
 
-def _resolve_user_id(request, explicit_user_id: Optional[str]) -> Optional[str]:
-    if explicit_user_id:
-        return explicit_user_id
-    try:
-        st = getattr(request, "state", None)
-        cand = None
-        if st is not None:
-            u = getattr(st, "user", None)
-            if hasattr(u, "id") and u.id:
-                cand = u.id
-            if not cand:
-                cand = getattr(st, "user_id", None)
-        if not cand:
-            u2 = getattr(request, "user", None)
-            if hasattr(u2, "id") and u2.id:
-                cand = u2.id
-            elif isinstance(u2, str) and u2:
-                cand = u2
-        if cand:
-            return str(cand)
-    except Exception:
-        pass
-    return None
-
-async def _count_today(session: AsyncSession, analysis_type: AnalysisType, *, user_id: Optional[str], actor_hash: Optional[str]) -> int:
-    now = datetime.now(timezone.utc)
-    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    q = select(func.count(Analysis.id)).where(
-        Analysis.analysis_type == analysis_type,
-        Analysis.created_at >= start,
-    )
-    if user_id:
-        q = q.where(Analysis.user_id == user_id)
-    else:
-        q = q.where(Analysis.user_id.is_(None), Analysis.actor_ip_hash == actor_hash)
-    return (await session.execute(q)).scalar_one()
-
-async def _check_daily_limit(session: AsyncSession, analysis_type: AnalysisType, *, user_id: Optional[str], actor_hash: Optional[str]) -> Tuple[int, int, str]:
-    if getattr(settings, "disable_limits", False):
-        return (0, 0, "disabled")
-    used = await _count_today(session, analysis_type, user_id=user_id, actor_hash=actor_hash)
-    if user_id:
-        limit = settings.user_image_limit if analysis_type == AnalysisType.image else settings.user_url_limit
-        scope = "user"
-    else:
-        limit = settings.anon_image_limit if analysis_type == AnalysisType.image else settings.anon_url_limit
-        scope = "anon"
-    if used >= limit:
-        raise ValueError("Limite diário de análises de imagem atingido.")
-    return (used, limit, scope)
 
 class ImageAnalysisService:
     def __init__(self, session: AsyncSession):
@@ -129,11 +89,33 @@ class ImageAnalysisService:
         }
         files = {"media": (filename, img_bytes, "application/octet-stream")}
         async with httpx.AsyncClient(timeout=settings.http_timeout) as client:
-            r = await client.post("https://api.sightengine.com/1.0/check.json", data=data, files=files)
             try:
-                return r.json()
-            except Exception:
-                return {"status": "failure", "error": {"code": r.status_code, "text": r.text}}
+                r = await client.post(
+                    "https://api.sightengine.com/1.0/check.json",
+                    data=data,
+                    files=files,
+                )
+            except httpx.HTTPError as exc:
+                logger.error(
+                    "sightengine.request_error",
+                    extra={"error_type": type(exc).__name__},
+                )
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
+            if r.status_code >= 400:
+                logger.error(
+                    "sightengine.status_error",
+                    extra={"status": r.status_code},
+                )
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
+            try:
+                payload = r.json()
+            except ValueError:
+                logger.error("sightengine.json_error")
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
+            if isinstance(payload, dict) and payload.get("status") == "failure":
+                logger.error("sightengine.api_error")
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
+            return payload
 
     async def analyze(
         self,
@@ -154,10 +136,13 @@ class ImageAnalysisService:
             raise ValueError("Conteúdo não reconhecido como PNG ou JPEG válido.")
 
         actor_hash = ip_hash_from_request(request)
-        resolved_user_id = _resolve_user_id(request, user_id)
+        resolved_user_id = resolve_user_id(request, user_id)
 
-        used_today, limit, scope = await _check_daily_limit(
-            self.session, AnalysisType.image, user_id=resolved_user_id, actor_hash=actor_hash
+        used_today, limit, scope = await check_daily_limit(
+            self.session,
+            AnalysisType.image,
+            user_id=resolved_user_id,
+            actor_hash=actor_hash,
         )
 
         analysis = Analysis(
@@ -170,27 +155,87 @@ class ImageAnalysisService:
         self.session.add(analysis)
         await self.session.flush()
 
-        await AuditRepository(self.session).insert(
-            table=__import__("app.domain.audit_model", fromlist=["AuditLog"]).AuditLog,
+        audit_repo = AuditRepository(self.session)
+
+        await audit_repo.insert(
+            table=AuditLog,
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
             action="analysis.image.create",
             resource=str(analysis.id),
             success=True,
-            details={"filename": filename, "content_type": content_type, "size": len(upload_bytes), "quota_used": used_today, "quota_limit": limit, "quota_scope": scope},
+            details={
+                "filename": filename,
+                "content_type": content_type,
+                "size": len(upload_bytes),
+                "quota_used": used_today,
+                "quota_limit": limit,
+                "quota_scope": scope,
+            },
         )
 
-        se_json = await self._sightengine_check(upload_bytes, filename)
+        try:
+            se_json = await self._sightengine_check(upload_bytes, filename)
+            ai_generated = _extract_ai_generated(se_json)
+            label_enum, type_hint = _decide(ai_generated)
 
-        ai_generated = _extract_ai_generated(se_json)
-        label_enum, type_hint = _decide(ai_generated)
+            tech_meta = {
+                "type_hint": type_hint,
+                "ai_generated_score": ai_generated,
+                "decision": label_enum.value,
+                "notes": "Classificação baseada em type/genai.ai_generated do Sightengine.",
+            }
 
-        tech_meta = {
-            "type_hint": type_hint,
-            "ai_generated_score": ai_generated,
-            "decision": label_enum.value,
-            "notes": "Classificação baseada somente em type/genai.ai_generated do Sightengine.",
-        }
+            ai_service = AIService()
+            ai_text = await ai_service.generate_for_image(
+                filename=filename,
+                mime=content_type,
+                detection_json=se_json,
+            )
+        except ValueError as exc:
+            analysis.status = AnalysisStatus.error
+            await audit_repo.insert(
+                table=AuditLog,
+                user_id=resolved_user_id,
+                actor_ip_hash=actor_hash,
+                action="analysis.image.error",
+                resource=str(analysis.id),
+                success=False,
+                details={
+                    "filename": filename,
+                    "content_type": content_type,
+                    "size": len(upload_bytes),
+                    "reason": "external_service_error",
+                },
+            )
+            await self.session.commit()
+            logger.error(
+                "analysis.image.external_error",
+                extra={"analysis_id": str(analysis.id), "error_type": type(exc).__name__},
+            )
+            raise ValueError(GENERIC_ANALYSIS_ERROR)
+        except Exception as exc:
+            analysis.status = AnalysisStatus.error
+            await audit_repo.insert(
+                table=AuditLog,
+                user_id=resolved_user_id,
+                actor_ip_hash=actor_hash,
+                action="analysis.image.error",
+                resource=str(analysis.id),
+                success=False,
+                details={
+                    "filename": filename,
+                    "content_type": content_type,
+                    "size": len(upload_bytes),
+                    "reason": "unexpected_error",
+                },
+            )
+            await self.session.commit()
+            logger.error(
+                "analysis.image.unexpected_error",
+                extra={"analysis_id": str(analysis.id), "error_type": type(exc).__name__},
+            )
+            raise ValueError(GENERIC_ANALYSIS_ERROR)
 
         pct = round(ai_generated * 100, 1)
         if label_enum == RiskLabel.fake:
@@ -198,52 +243,42 @@ class ImageAnalysisService:
                 f"A imagem '{filename}' apresenta fortes indícios de geração por IA "
                 f"(probabilidade {pct}%)."
             )
+            base_recs = [
+                "Não compartilhe esta imagem.",
+                "Solicite a fonte original se necessário.",
+                "Se for associada ao seu nome, publique um desmentido e guarde evidências.",
+            ]
         elif label_enum == RiskLabel.suspicious:
             base_expl = (
                 f"A imagem '{filename}' possui sinais de possível geração por IA "
                 f"(probabilidade {pct}%)."
             )
+            base_recs = [
+                "Busque a fonte original (reverse image search).",
+                "Evite conclusões sem validação independente.",
+                "Se necessário, solicite verificação a um canal oficial.",
+            ]
         else:
             base_expl = (
                 f"A imagem '{filename}' não apresentou sinais relevantes de geração por IA "
                 f"(probabilidade {pct}%)."
             )
-
-        if label_enum == RiskLabel.fake:
-            base_recs = [
-                "Não compartilhe esta imagem.",
-                "Solicite a fonte original se necessário.",
-                "Se for associada ao seu nome, publique um desmentido e guarde evidências."
-            ]
-        elif label_enum == RiskLabel.suspicious:
-            base_recs = [
-                "Busque a fonte original (reverse image search).",
-                "Evite conclusões sem validação independente.",
-                "Se necessário, solicite verificação a um canal oficial."
-            ]
-        else:
             base_recs = [
                 "Respeite a privacidade de pessoas retratadas.",
-                "Verifique se não há dados sensíveis antes de publicar."
+                "Verifique se não há dados sensíveis antes de publicar.",
             ]
 
-        extra_expl = ""
-        extra_recs: list[str] = []
-        try:
-            ai = AIService()
-            ai_text = await ai.generate_for_image(
-                filename=filename,
-                mime=content_type,
-                detection_json=se_json,
-            )
-            extra_expl = (ai_text.get("explanation") or "").strip()
-            rs = ai_text.get("recommendations") or []
-            if isinstance(rs, list):
-                extra_recs = [str(x).strip() for x in rs if str(x).strip()]
-        except Exception as e:
-            logger.warning("AIService.generate_for_image falhou: %s", e)
+        extra_expl = (ai_text.get("explanation") or "").strip()
+        extra_recs_raw = ai_text.get("recommendations") or []
+        if isinstance(extra_recs_raw, list):
+            extra_recs = [str(x).strip() for x in extra_recs_raw if str(x).strip()]
+        else:
+            extra_recs = [str(extra_recs_raw).strip()] if extra_recs_raw else []
 
-        explanation = base_expl if not extra_expl else f"{base_expl}\n\nObservação do modelo: {extra_expl}"
+        explanation = base_expl
+        if extra_expl:
+            explanation = f"{base_expl}\n\nObservação do modelo: {extra_expl}"
+
         recs_set = set(base_recs)
         recommendations = base_recs + [r for r in extra_recs if r not in recs_set]
 
@@ -260,7 +295,7 @@ class ImageAnalysisService:
 
         ai_json_std = {
             "explanation": explanation,
-            "classification": _pt_label(label_enum),   
+            "classification": _pt_label(label_enum),
             "recommendations": recommendations,
         }
         ai_resp = AIResponse(
@@ -277,14 +312,18 @@ class ImageAnalysisService:
         analysis.label = label_enum
         analysis.completed_at = datetime.now(timezone.utc)
 
-        await AuditRepository(self.session).insert(
-            table=__import__("app.domain.audit_model", fromlist=["AuditLog"]).AuditLog,
+        await audit_repo.insert(
+            table=AuditLog,
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
             action="analysis.image.finish",
             resource=str(analysis.id),
             success=True,
-            details={"label": label_enum.value, "ai_generated": ai_generated, "type_hint": type_hint},
+            details={
+                "label": label_enum.value,
+                "ai_generated": ai_generated,
+                "type_hint": type_hint,
+            },
         )
 
         await self.session.commit()
@@ -297,6 +336,11 @@ class ImageAnalysisService:
             "used_today": used_after,
             "remaining_today": remaining,
         }
-        ai_json_std["label"] = label_enum.value  
+        ai_json_std["label"] = label_enum.value
+
+        logger.info(
+            "analysis.image.done",
+            extra={"analysis_id": str(analysis.id), "label": analysis.label.value},
+        )
 
         return analysis, img_row, ai_json_std

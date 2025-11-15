@@ -23,24 +23,22 @@ from app.api.controllers import (
     history_controller,
 )
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
         async with engine.begin() as conn:
             await conn.execute(text("SELECT 1"))
-        async with engine.begin() as conn:
             await conn.execute(text("SELECT 1 FROM users LIMIT 1"))
 
-        _h = pwd_context.hash("warmup@123!")
-        pwd_context.verify("warmup@123!", _h)
+        hashed = pwd_context.hash("warmup@123!")
+        pwd_context.verify("warmup@123!", hashed)
         checkpw(b"warmup", hashpw(b"warmup", gensalt()))
     except Exception:
         pass
 
-    keep_running = True
-
     async def keepalive():
-        while keep_running:
+        while True:
             try:
                 async with engine.begin() as conn:
                     await conn.execute(text("SELECT 1"))
@@ -56,52 +54,67 @@ async def lifespan(app: FastAPI):
         task.cancel()
     except Exception:
         pass
+
     try:
         await engine.dispose()
     except Exception:
         pass
 
 
-app = FastAPI(title="Veracity API", version="1.0", debug=False, lifespan=lifespan)
+app = FastAPI(
+    title="Veracity API",
+    version="1.0",
+    debug=False,
+    lifespan=lifespan,
+)
 
 _env_origins = os.getenv(
     "ALLOWED_ORIGINS",
     "http://localhost:5173,http://127.0.0.1:5173",
 )
-ALLOWED_ORIGINS = [o.strip() for o in _env_origins.split(",") if o.strip()]
+ALLOWED_ORIGINS = [origin.strip() for origin in _env_origins.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True, 
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
-    expose_headers=["Content-Disposition"], 
+    expose_headers=["Content-Disposition"],
 )
 
+
 @app.exception_handler(StarletteHTTPException)
-async def http_ex_handler(_: Request, exc: StarletteHTTPException):
+async def http_ex_handler(_: Request, exc: StarletteHTTPException) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
+
 @app.exception_handler(RequestValidationError)
-async def validation_ex_handler(_: Request, exc: RequestValidationError):
-    return JSONResponse(status_code=422, content={"detail": "Validation error", "errors": exc.errors()})
+async def validation_ex_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "Validation error", "errors": exc.errors()},
+    )
+
 
 @app.exception_handler(Exception)
-async def unhandled_ex_handler(_: Request, __: Exception):
+async def unhandled_ex_handler(_: Request, __: Exception) -> JSONResponse:
     return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+
 
 app.include_router(auth_controller.router)
 app.include_router(users_controller.router)
-app.include_router(admin_controller.router)      
+app.include_router(admin_controller.router)
 app.include_router(contact_controller.router)
 app.include_router(analysis_controller.router)
 app.include_router(history_controller.router)
 
+
 @app.get("/health")
-def health():
+def health() -> dict[str, bool]:
     return {"ok": True}
 
+
 @app.get("/ready")
-def ready():
+def ready() -> dict[str, str | bool]:
     return {"db": True, "app": "ready"}
