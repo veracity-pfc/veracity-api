@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin
 from app.core.database import get_session as get_db
-from app.repositories.analysis_repo import AnalysisRepository
+from app.services.admin_service import AdminDashboardService
 
 router = APIRouter(prefix="/administration", tags=["admin"])
 
@@ -29,15 +30,7 @@ async def metrics_month(
     session: AsyncSession = Depends(get_db),
     year: int | None = Query(default=None, description="Ano (YYYY)"),
     month: int | None = Query(default=None, description="Mês (1-12)"),
-):
+) -> Dict[str, Any]:
     y, m = _validate_year_month(year, month)
-    repo = AnalysisRepository(session)
-    metrics = await repo.monthly_metrics(year=y, month=m)
-
-    return {
-        "year": y,
-        "month": m,
-        "reference": f"{y:04d}-{m:02d}",
-        "bars": metrics["bars"],
-        "totals": metrics["totals"],
-    }
+    service = AdminDashboardService(session)
+    return await service.get_monthly_metrics(year=y, month=m)
