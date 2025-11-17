@@ -35,7 +35,7 @@ async def login(
             status_code=403,
             detail={
                 "code": "ACCOUNT_INACTIVE",
-                "message": "A conta está desativada. Entre em contato para recuperar o acesso.",
+                "message": "A conta está desativada.",
             },
         )
 

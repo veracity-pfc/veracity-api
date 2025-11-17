@@ -143,7 +143,7 @@ class UrlAnalysisService:
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
             action="analysis.url.create",
-            resource=str(analysis.id),
+            resource="/analyses/url",
             success=True,
             details={
                 "source_url": url_in,

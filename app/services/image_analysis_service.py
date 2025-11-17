@@ -162,7 +162,7 @@ class ImageAnalysisService:
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
             action="analysis.image.create",
-            resource=str(analysis.id),
+            resource="/analyses/image",
             success=True,
             details={
                 "filename": filename,

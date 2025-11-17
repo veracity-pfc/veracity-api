@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin
-from app.core.database import get_session as get_db
+from app.core.database import get_session
 from app.services.admin_service import AdminDashboardService
 
 router = APIRouter(prefix="/administration", tags=["admin"])
@@ -27,7 +27,7 @@ def _validate_year_month(year: int | None, month: int | None) -> tuple[int, int]
 @router.get("/metrics/month")
 async def metrics_month(
     _: str = Depends(require_admin),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_session),
     year: int | None = Query(default=None, description="Ano (YYYY)"),
     month: int | None = Query(default=None, description="Mês (1-12)"),
 ) -> Dict[str, Any]:
