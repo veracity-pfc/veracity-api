@@ -63,7 +63,25 @@ def build_contact_email_html(email: str, subject: str, message: str) -> str:
         "</pre>"
         "</body></html>"
     )
+    
 
+def reactivate_account_email_html(name: str, code: str) -> str:
+  return f"""
+<!doctype html>
+<html>
+  <body style="font-family:Arial,sans-serif;background:#0b1211;padding:24px;color:#eef2f1">
+    <div style="max-width:520px;margin:0 auto;background:#0e1b19;border-radius:12px;padding:24px">
+      <h2 style="margin:0 0 8px">Reativar conta</h2>
+      <p style="opacity:.9">Olá, <b>{name}</b>. Você solicitou a reativação da sua conta no Veracity.</p>
+      <p style="opacity:.9">Para concluir, informe o código abaixo na plataforma.</p>
+      <div style="margin:16px 0;padding:12px 0;text-align:center;font-size:24px;letter-spacing:6px;font-weight:700;background:#051513;border-radius:10px;">
+        {code}
+      </div>
+      <p style="opacity:.8">O código é válido por poucos minutos. Se você não solicitou, ignore este e-mail.</p>
+    </div>
+  </body>
+</html>
+        """.strip()
 
 def reset_password_email_html(name: str, link: str) -> str:
     name = html.escape(name or "")

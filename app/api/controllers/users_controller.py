@@ -24,7 +24,7 @@ from app.domain.pending_email_change_model import PendingEmailChange
 from app.domain.analysis_model import Analysis
 from app.repositories.analysis_repo import AnalysisRepository
 from app.repositories.audit_repo import AuditRepository
-#from app.services.user_service import UserService
+from app.services.user_service import UserService
 
 router = APIRouter(prefix="/user", tags=["user"])
 class ReactivateAccountPayload(BaseModel):
@@ -238,4 +238,167 @@ async def delete_account(
     )
     await session.commit()
     return {"ok": True}
+
+
+
+@router.post("/reactivate-account/validate")
+async def validate_reactivate_account(
+    payload: ReactivateAccountPayload,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    service = UserService(session)
+    audit = AuditRepository(session)
+    ip = request.client.host if request.client else None
+    ip_hash = _hash_ip(ip)
+
+    try:
+        email, user_id = await service.validate_email(payload.email)
+    except HTTPException as exc:
+        await audit.insert(
+            AuditLog,
+            user_id=None,
+            actor_ip_hash=ip_hash,
+            action="user.reactivate.validate",
+            resource="user",
+            success=False,
+            details={
+                "email": payload.email,
+                "error": exc.detail,
+            },
+        )
+        raise
+
+    await audit.insert(
+        AuditLog,
+        user_id=user_id,
+        actor_ip_hash=ip_hash,
+        action="user.reactivate.validate",
+        resource="user",
+        success=True,
+        details={"email": email},
+    )
+
+    return {"ok": True}
+
+
+@router.post("/reactivate-account/send-code")
+async def send_reactivate_code(
+    payload: ReactivateAccountPayload,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    service = UserService(session)
+    audit = AuditRepository(session)
+    ip = request.client.host if request.client else None
+    ip_hash = _hash_ip(ip)
+
+    try:
+        email, user_id = await service.validate_email(payload.email)
+    except HTTPException as exc:
+        await audit.insert(
+            AuditLog,
+            user_id=None,
+            actor_ip_hash=ip_hash,
+            action="user.reactivate.send_code",
+            resource="user",
+            success=False,
+            details={
+                "email": payload.email,
+                "error": exc.detail,
+            },
+        )
+        raise
+
+    try:
+        await service.send_reactivation_code(email)
+    except HTTPException as exc:
+        await audit.insert(
+            AuditLog,
+            user_id=user_id,
+            actor_ip_hash=ip_hash,
+            action="user.reactivate.send_code",
+            resource="user",
+            success=False,
+            details={
+                "email": email,
+                "error": exc.detail,
+            },
+        )
+        raise
+
+    await audit.insert(
+        AuditLog,
+        user_id=user_id,
+        actor_ip_hash=ip_hash,
+        action="user.reactivate.send_code",
+        resource="user",
+        success=True,
+        details={"email": email},
+    )
+
+    return {"detail": "Código de reativação enviado com sucesso."}
+
+
+@router.post("/reactivate-account/confirm-code")
+async def confirm_reactivate_code(
+    payload: ReactivateConfirmPayload,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    service = UserService(session)
+    audit = AuditRepository(session)
+    ip = request.client.host if request.client else None
+    ip_hash = _hash_ip(ip)
+
+    try:
+        email, user_id = await service.validate_email(payload.email)
+    except HTTPException as exc:
+        await audit.insert(
+            AuditLog,
+            user_id=None,
+            actor_ip_hash=ip_hash,
+            action="user.reactivate.confirm_code",
+            resource="user",
+            success=False,
+            details={
+                "email": payload.email,
+                "code": payload.code,
+                "error": exc.detail,
+            },
+        )
+        raise
+
+    try:
+        await service.confirm_reactivation_code(email, payload.code)
+    except HTTPException as exc:
+        await audit.insert(
+            AuditLog,
+            user_id=user_id,
+            actor_ip_hash=ip_hash,
+            action="user.reactivate.confirm_code",
+            resource="user",
+            success=False,
+            details={
+                "email": email,
+                "code": payload.code,
+                "error": exc.detail,
+            },
+        )
+        raise
+
+    await audit.insert(
+        AuditLog,
+        user_id=user_id,
+        actor_ip_hash=ip_hash,
+        action="user.reactivate.confirm_code",
+        resource="/user/reactivate-account",
+        success=True,
+        details={
+            "email": email,
+            "code": payload.code,
+        },
+    )
+
+    return {"detail": "Conta reativada com sucesso."}
 

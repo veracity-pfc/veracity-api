@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional
 import uuid
 
-from sqlalchemy import String, Text, TIMESTAMP, func
+from sqlalchemy import String, Text, TIMESTAMP, VARCHAR, func
 from sqlalchemy.dialects.postgresql import UUID, ENUM as PGEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -45,4 +45,10 @@ class User(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+    reactivation_code: Mapped[str] = mapped_column(VARCHAR(6), nullable=False)
+    reactivation_code_expires_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        onupdate=func.now(),
+        nullable=True,
     )
