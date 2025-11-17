@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.enums import RiskLabel
 from app.repositories.analysis_repo import AnalysisRepository
 from app.schemas.history import HistoryDetailOut, HistoryItemOut, HistoryPageOut
+from app.domain.ai_model import AIResponse
+from app.domain.image_analysis_model import ImageAnalysis
 
 
 def _normalize_range(
@@ -37,6 +39,7 @@ def _normalize_range(
 
 class HistoryService:
     def __init__(self, session: AsyncSession):
+        self.session = session
         self.repo = AnalysisRepository(session)
 
     async def list_for_user(
@@ -62,19 +65,35 @@ class HistoryService:
             date_to=end,
             status=status,
             analysis_type=analysis_type,
+            exclude_errors=True,
         )
 
-        items = [
-            HistoryItemOut(
-                id=str(r[0]),
-                created_at=r[1],
-                analysis_type=r[2],
-                label=r[3],
-                status=r[4].value if hasattr(r[4], "value") else str(r[4]),
-                source=r[5],
+        items = []
+        for r in rows:
+            a_id = str(r[0])
+            created_at = r[1]
+            a_type = r[2]
+            label = r[3]
+            status_val = r[4].value if hasattr(r[4], "value") else str(r[4])
+            source_url = r[5]
+
+            if a_type == "image":
+                img = await self.session.get(ImageAnalysis, a_id)
+                filename = img.meta.get("filename") if img else "—"
+                source = filename
+            else:
+                source = source_url or "—"
+
+            items.append(
+                HistoryItemOut(
+                    id=a_id,
+                    created_at=created_at,
+                    analysis_type=a_type,
+                    label=label,
+                    status=status_val,
+                    source=source,
+                )
             )
-            for r in rows
-        ]
 
         total_pages = ceil(total / page_size) if page_size else 1
         return HistoryPageOut(
@@ -109,11 +128,22 @@ class HistoryService:
         row = await self.repo.find_one_for_user(
             analysis_id=analysis_id,
             user_id=user_id,
+            exclude_errors=True,
         )
         if not row:
             return None
 
-        summary, recs, raw = self._parse_ai(row.ai_content)
+        ai_resp = None
+        if row.ai_response_id:
+            ai_resp = await self.session.get(AIResponse, row.ai_response_id)
+
+        summary, recs, raw = self._parse_ai(ai_resp.content if ai_resp else None)
+
+        if row.analysis_type == "image":
+            img = await self.session.get(ImageAnalysis, analysis_id)
+            source = img.meta.get("filename") if img else "—"
+        else:
+            source = row.source_url or "—"
 
         return HistoryDetailOut(
             id=str(row.id),
@@ -121,7 +151,7 @@ class HistoryService:
             analysis_type=row.analysis_type,
             label=row.label,
             status=row.status.value if hasattr(row.status, "value") else str(row.status),
-            source=row.source,
+            source=source,
             ai_summary=summary,
             ai_recommendations=recs,
             ai_raw=raw,

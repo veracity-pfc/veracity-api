@@ -68,9 +68,11 @@ async def gsb_check(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
         },
     }
     t0 = time.perf_counter()
+    
     try:
         r = await client.post(
-            f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={settings.gsb_api_key}",
+            f"https://safebrowsing.googleapis.com/v4/threatMatches:find",
+            headers={"X-Goog-Api-Key": settings.gsb_api_key},
             json=body,
         )
     except httpx.HTTPError as exc:
@@ -159,6 +161,16 @@ class UrlAnalysisService:
 
         timeout = httpx.Timeout(settings.http_timeout)
         try:
+            logger.info(
+                "analysis.url.start",
+                extra={
+                    "url": url_in,
+                    "analysis_id": str(analysis.id),
+                    "tld_ok": tld_ok,
+                    "dns_ok": dns_ok_flag,
+                },
+            )
+
             async with httpx.AsyncClient(timeout=timeout) as client:
                 gsb_res = await gsb_check(url_in, client)
                 ai_service = AIService(client)
@@ -168,8 +180,10 @@ class UrlAnalysisService:
                     dns_ok=dns_ok_flag,
                     gsb_json=gsb_res or {},
                 )
+
         except ValueError as exc:
             analysis.status = AnalysisStatus.error
+
             await audit_repo.insert(
                 table=AuditLog,
                 user_id=resolved_user_id,
@@ -183,13 +197,21 @@ class UrlAnalysisService:
                 },
             )
             await self.session.commit()
-            logger.error(
+
+            logger.exception(
                 "analysis.url.failed",
-                extra={"analysis_id": str(analysis.id), "error_type": type(exc).__name__},
+                extra={
+                    "analysis_id": str(analysis.id),
+                    "error_type": type(exc).__name__,
+                    "url": url_in,
+                },
             )
-            raise ValueError(GENERIC_ANALYSIS_ERROR)
+
+            raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
+
         except Exception as exc:
             analysis.status = AnalysisStatus.error
+
             await audit_repo.insert(
                 table=AuditLog,
                 user_id=resolved_user_id,
@@ -203,11 +225,18 @@ class UrlAnalysisService:
                 },
             )
             await self.session.commit()
-            logger.error(
+
+            logger.exception(
                 "analysis.url.unexpected_error",
-                extra={"analysis_id": str(analysis.id), "error_type": type(exc).__name__},
+                extra={
+                    "analysis_id": str(analysis.id),
+                    "error_type": type(exc).__name__,
+                    "url": url_in,
+                },
             )
-            raise ValueError(GENERIC_ANALYSIS_ERROR)
+
+            raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
+
 
         label_enum = map_pt_label_to_enum(ai_json.get("classification", ""))
 

@@ -35,7 +35,7 @@ async def analyze_url(
             user_id=str(user.id) if user else None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=429, detail=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc))
 
     return {
         "analysis_id": str(analysis.id),
@@ -86,7 +86,7 @@ async def analyze_image(
             user_id=str(user.id) if user else None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=429, detail=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc))
 
     return {
         "analysis_id": str(analysis.id),

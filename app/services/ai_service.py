@@ -15,12 +15,14 @@ from app.core.constants import IANA_TTL_SEC, IANA_URL, GENERIC_ANALYSIS_ERROR, H
 
 logger = logging.getLogger("veracity.ai_service")
 
+IANA_TLDS: set[str] | None = None
+IANA_FETCH_TS: float | None = None
 
 async def _load_iana_tlds(client: httpx.AsyncClient) -> set[str]:
-    global _IANA_TLDS, _IANA_FETCH_TS
+    global IANA_TLDS, IANA_FETCH_TS
     now = time.time()
-    if _IANA_TLDS is not None and _IANA_FETCH_TS and (now - _IANA_FETCH_TS) < IANA_TTL_SEC:
-        return _IANA_TLDS
+    if IANA_TLDS is not None and IANA_FETCH_TS and (now - IANA_FETCH_TS) < IANA_TTL_SEC:
+        return IANA_TLDS
 
     t0 = time.perf_counter()
     r = await client.get(IANA_URL, timeout=settings.http_timeout)
@@ -30,7 +32,7 @@ async def _load_iana_tlds(client: httpx.AsyncClient) -> set[str]:
 
     lines = r.text.splitlines()
     tlds = {ln.strip().lower() for ln in lines if ln and not ln.startswith("#")}
-    _IANA_TLDS, _IANA_FETCH_TS = tlds, now
+    IANA_TLDS, IANA_FETCH_TS = tlds, now
     logger.info("iana.tlds.loaded", extra={"count": len(tlds)})
     return tlds
 
@@ -186,15 +188,18 @@ class AIService:
             try:
                 iana_tlds = await _load_iana_tlds(client)
             except Exception as exc:
-                logger.error(
+                logger.exception(
                     "iana.tlds.error",
-                    extra={"error_type": type(exc).__name__},
+                    extra={
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    },
                 )
-                raise ValueError(GENERIC_ANALYSIS_ERROR)
+                raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
 
             sig = _compute_signals(url, iana_tlds, tld_ok_input=tld_ok, dns_ok=dns_ok)
             prompt = _build_prompt(gsb_json or {}, sig)
-
+            
             try:
                 out = await _hf_chat(
                     client,
@@ -203,11 +208,16 @@ class AIService:
                     max_tokens=360,
                 )
             except Exception as exc:
-                logger.error(
+                logger.exception(
                     "hf.chat.url.error",
-                    extra={"error_type": type(exc).__name__},
+                    extra={
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    },
                 )
-                raise ValueError(GENERIC_ANALYSIS_ERROR)
+                raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
+
+
 
             if not isinstance(out, dict) or not all(
                 k in out for k in ("classification", "explanation", "recommendations")
@@ -244,17 +254,25 @@ class AIService:
                     max_tokens=480,
                 )
             except Exception as exc:
-                logger.error(
+                logger.exception(
                     "hf.chat.image.error",
-                    extra={"error_type": type(exc).__name__},
+                    extra={
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    },
                 )
-                raise ValueError(GENERIC_ANALYSIS_ERROR)
+                raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
+
 
             if not isinstance(out, dict) or not all(
                 k in out for k in ("explanation", "recommendations")
             ):
-                logger.error("hf.chat.image.invalid_payload")
+                logger.error(
+                    "hf.chat.image.invalid_payload",
+                    extra={"raw": str(out)[:500]},
+                )
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
+
 
             explanation = " ".join(str(out.get("explanation", "")).split())
             out["explanation"] = explanation

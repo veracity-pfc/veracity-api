@@ -1,24 +1,20 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional, Sequence
+from typing import Optional
 
 from sqlalchemy import (
-    String,
-    and_,
     bindparam,
     cast,
     func,
-    or_,
     select,
     text,
+    Tuple
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.ai_model import AIResponse
 from app.domain.analysis_model import Analysis
 from app.domain.enums import AnalysisType, RiskLabel
-from app.domain.image_analysis_model import ImageAnalysis
 
 
 class AnalysisRepository:
@@ -32,75 +28,64 @@ class AnalysisRepository:
         page: int,
         page_size: int,
         q: Optional[str],
-        date_from: Optional[datetime],
-        date_to: Optional[datetime],
+        date_from: Optional[object],
+        date_to: Optional[object],
         status: Optional[RiskLabel],
         analysis_type: Optional[AnalysisType],
-    ) -> tuple[int, Sequence[tuple]]:
+        exclude_errors: bool = False,
+    ) -> Tuple[int, list]:
         filters = [Analysis.user_id == user_id]
 
-        if status is not None:
-            filters.append(Analysis.label == status)
-        if analysis_type is not None:
-            filters.append(Analysis.analysis_type == analysis_type)
-        if date_from is not None:
+        if exclude_errors:
+            filters.append(Analysis.status == "done")
+
+        if date_from:
             filters.append(Analysis.created_at >= date_from)
-        if date_to is not None:
+        if date_to:
             filters.append(Analysis.created_at < date_to)
+        if analysis_type:
+            filters.append(Analysis.analysis_type == analysis_type)
+        if status:
+            filters.append(Analysis.label == status)
+
         if q:
-            like = f"%{q.lower()}%"
-            filters.append(
-                or_(
-                    func.lower(Analysis.source_url).like(like),
-                    func.lower(cast(ImageAnalysis.meta["filename"], String)).like(like),
-                    func.lower(Analysis.label.cast(String)).like(like),
-                )
-            )
+            filters.append(Analysis.source_url.ilike(f"%{q}%"))
 
-        image_filename = cast(ImageAnalysis.meta["filename"], String)
-        source_expr = func.coalesce(image_filename, Analysis.source_url)
+        stmt = select(func.count(Analysis.id)).where(*filters)
+        total = (await self.session.execute(stmt)).scalar_one()
 
-        base_q = (
+        stmt = (
             select(
                 Analysis.id,
                 Analysis.created_at,
                 Analysis.analysis_type,
                 Analysis.label,
                 Analysis.status,
-                source_expr.label("source"),
+                Analysis.source_url,
             )
-            .join(ImageAnalysis, ImageAnalysis.analysis_id == Analysis.id, isouter=True)
-            .where(and_(*filters))
-            .order_by(Analysis.created_at.desc(), Analysis.id.desc())
+            .where(*filters)
+            .order_by(Analysis.created_at.desc())
+            .limit(page_size)
+            .offset((page - 1) * page_size)
         )
+        rows = (await self.session.execute(stmt)).all()
 
-        total_q = select(func.count()).select_from(base_q.subquery())
-        total = (await self.session.execute(total_q)).scalar_one()
-
-        offset = (page - 1) * page_size
-        rows = (await self.session.execute(base_q.limit(page_size).offset(offset))).all()
         return total, rows
 
-    async def find_one_for_user(self, *, analysis_id: str, user_id: str):
-        image_filename = cast(ImageAnalysis.meta["filename"], String)
-        source_expr = func.coalesce(image_filename, Analysis.source_url)
+    async def find_one_for_user(
+        self,
+        *,
+        analysis_id: str,
+        user_id: str,
+        exclude_errors: bool = False,
+    ):
+        filters = [Analysis.id == analysis_id, Analysis.user_id == user_id]
 
-        q = (
-            select(
-                Analysis.id,
-                Analysis.created_at,
-                Analysis.analysis_type,
-                Analysis.label,
-                Analysis.status,
-                source_expr.label("source"),
-                AIResponse.content.label("ai_content"),
-            )
-            .join(ImageAnalysis, ImageAnalysis.analysis_id == Analysis.id, isouter=True)
-            .join(AIResponse, AIResponse.analysis_id == Analysis.id, isouter=True)
-            .where(Analysis.id == analysis_id, Analysis.user_id == user_id)
-        )
-        res = (await self.session.execute(q)).first()
-        return res
+        if exclude_errors:
+            filters.append(Analysis.status == "done")
+
+        stmt = select(Analysis).where(*filters)
+        return (await self.session.execute(stmt)).scalar_one_or_none()
 
     async def user_counts(
         self,
