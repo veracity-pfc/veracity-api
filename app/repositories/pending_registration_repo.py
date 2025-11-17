@@ -13,12 +13,30 @@ class PendingRegistrationRepository:
         self.session = session
 
     async def get_by_email(self, email: str) -> PendingRegistration | None:
-        result = await self.session.execute(
-            select(PendingRegistration).where(
-                func.lower(PendingRegistration.email) == email.lower()
+        normalized = (email or "").strip().lower()
+        stmt = (
+            select(PendingRegistration)
+            .where(func.lower(PendingRegistration.email) == normalized)
+            .order_by(PendingRegistration.created_at.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def delete_by_email(self, email: str) -> None:
+        normalized = (email or "").strip().lower()
+        await self.session.execute(
+            delete(PendingRegistration).where(
+                func.lower(PendingRegistration.email) == normalized
             )
         )
-        return result.scalar_one_or_none()
+
+    async def delete(self, record: PendingRegistration) -> None:
+        await self.session.delete(record)
+
+    async def add(self, record: PendingRegistration) -> None:
+        self.session.add(record)
+        await self.session.flush()
 
     async def create(
         self,

@@ -10,3 +10,11 @@ htmlcov/
 .env.*
 *.pyc
 *.pyc
+app/api/controllers/__pycache__/users_controller.cpython-313.pyc
+app/api/controllers/__pycache__/history_controller.cpython-313.pyc
+app/api/controllers/__pycache__/contact_controller.cpython-313.pyc
+app/api/controllers/__pycache__/auth_controller.cpython-313.pyc
+app/api/controllers/__pycache__/analysis_controller.cpython-313.pyc
+app/api/controllers/__pycache__/admin_controller.cpython-313.pyc
+app/api/__pycache__/deps.cpython-313.pyc
+app/__pycache__/main.cpython-313.pyc
