@@ -1,11 +1,11 @@
-from pydantic import BaseModel, Field, EmailStr, field_validator
+from pydantic import BaseModel, field_validator, Field
 
 ALLOWED_SUBJECTS = {"Dúvida", "Sugestão", "Solicitação", "Reclamação"}
 
 class ContactMessageIn(BaseModel):
-    email: EmailStr
-    subject: str = Field(min_length=3, max_length=20)
-    message: str = Field(min_length=3, max_length=4000)
+    email: str = ""
+    subject: str = ""
+    message: str = ""
 
     @field_validator("subject")
     @classmethod

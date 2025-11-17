@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ip_hash_from_request
 from app.core.config import settings
+from app.core.constants import EMAIL_RE
 from app.domain.audit_model import AuditLog
 from app.repositories.audit_repo import AuditRepository
 from app.services.email_service import EmailError, build_contact_email_html, send_email
@@ -26,6 +28,25 @@ class ContactService:
         message: str,
         request,
     ) -> None:
+
+        email = (email or "").strip()
+        message = (message or "").strip()
+
+        if not email:
+            raise ValueError("O e-mail deve ser preenchido.")
+
+        if len(email) > 60:
+            raise ValueError("O e-mail deve ter no máximo 60 caracteres.")
+
+        if not EMAIL_RE.match(email):
+            raise ValueError("O e-mail informado é inválido.")
+
+        if not message:
+            raise ValueError("A mensagem deve ser preenchida.")
+
+        if len(message) > 4000:
+            raise ValueError("A mensagem deve ter no máximo 4000 caracteres.")
+
         contact_to: Optional[str] = getattr(settings, "resend_from", None)
         if not contact_to:
             raise ValueError("Configuração de e-mail não encontrada.")

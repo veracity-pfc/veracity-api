@@ -25,10 +25,10 @@ async def send_contact(
             request=request,
         )
         return ContactOkOut()
-    except ValueError:
+    except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail="Requisição inválida. Verifique os dados enviados.",
+            detail=str(exc),
         )
     except Exception:
         raise HTTPException(
