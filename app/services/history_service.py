@@ -14,7 +14,7 @@ from app.domain.ai_model import AIResponse
 from app.domain.image_analysis_model import ImageAnalysis
 
 
-def _normalize_range(
+def normalize_date_range(
     date_from: Optional[datetime],
     date_to: Optional[datetime],
 ) -> tuple[Optional[datetime], Optional[datetime]]:
@@ -54,7 +54,7 @@ class HistoryService:
         status: Optional[RiskLabel],
         analysis_type,
     ) -> HistoryPageOut:
-        start, end = _normalize_range(date_from, date_to)
+        start, end = normalize_date_range(date_from, date_to)
 
         total, rows = await self.repo.paginated_for_user(
             user_id=user_id,
@@ -68,9 +68,9 @@ class HistoryService:
             exclude_errors=True,
         )
 
-        items = []
+        items: list[HistoryItemOut] = []
         for r in rows:
-            a_id = str(r[0])
+            analysis_id = str(r[0])
             created_at = r[1]
             a_type = r[2]
             label = r[3]
@@ -78,7 +78,7 @@ class HistoryService:
             source_url = r[5]
 
             if a_type == "image":
-                img = await self.session.get(ImageAnalysis, a_id)
+                img = await self.session.get(ImageAnalysis, analysis_id)
                 filename = img.meta.get("filename") if img else "—"
                 source = filename
             else:
@@ -86,7 +86,7 @@ class HistoryService:
 
             items.append(
                 HistoryItemOut(
-                    id=a_id,
+                    id=analysis_id,
                     created_at=created_at,
                     analysis_type=a_type,
                     label=label,

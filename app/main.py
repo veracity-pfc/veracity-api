@@ -21,6 +21,7 @@ from app.api.controllers import (
     contact_controller,
     users_controller,
     history_controller,
+    api_token_controller
 )
 
 import logging
@@ -121,6 +122,7 @@ app.include_router(admin_controller.router)
 app.include_router(contact_controller.router)
 app.include_router(analysis_controller.router)
 app.include_router(history_controller.router)
+app.include_router(api_token_controller.router)
 
 
 @app.get("/health")

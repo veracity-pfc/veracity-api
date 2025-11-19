@@ -7,6 +7,7 @@ import httpx
 from app.core.config import settings
 from app.core.constants import RESEND_API
 
+
 class EmailError(RuntimeError):
     pass
 
@@ -55,33 +56,54 @@ def verification_email_html(name: str, code: str) -> str:
 def build_contact_email_html(email: str, subject: str, message: str) -> str:
     return (
         "<!doctype html><html><body style='font-family:Arial,sans-serif'>"
-        f"<h2>Nova mensagem recebida - {subject}</h2>"
-        f"<p><b>De:</b> {email}</p>"
+        f"<h2>Nova mensagem recebida - {html.escape(subject)}</h2>"
+        f"<p><b>De:</b> {html.escape(email)}</p>"
         "<hr>"
         f"<pre style='white-space:pre-wrap;font-size:14px;line-height:1.5'>"
-        f"{message}"
+        f"{html.escape(message)}"
         "</pre>"
         "</body></html>"
     )
-    
+
+
+def build_api_token_request_email_html(
+    email: str,
+    created_at: str,
+    request_id: str,
+) -> str:
+    body = (
+        "Nova solicitação de token de API\n\n"
+        f"Solicitação criada em: {created_at}\n"
+        f"Usuário solicitante: {email}\n\n"
+        f"Para mais detalhes, consulte o link: http://localhost:5173/request/{request_id}"
+    )
+    return (
+        "<!doctype html><html><body style='font-family:Arial,sans-serif'>"
+        f"<pre style='white-space:pre-wrap;font-size:14px;line-height:1.5'>"
+        f"{html.escape(body)}"
+        "</pre>"
+        "</body></html>"
+    )
+
 
 def reactivate_account_email_html(name: str, code: str) -> str:
-  return f"""
+    return f"""
 <!doctype html>
 <html>
   <body style="font-family:Arial,sans-serif;background:#0b1211;padding:24px;color:#eef2f1">
     <div style="max-width:520px;margin:0 auto;background:#0e1b19;border-radius:12px;padding:24px">
       <h2 style="margin:0 0 8px">Reativar conta</h2>
-      <p style="opacity:.9">Olá, <b>{name}</b>. Você solicitou a reativação da sua conta no Veracity.</p>
+      <p style="opacity:.9">Olá, <b>{html.escape(name or '')}</b>. Você solicitou a reativação da sua conta no Veracity.</p>
       <p style="opacity:.9">Para concluir, informe o código abaixo na plataforma.</p>
       <div style="margin:16px 0;padding:12px 0;text-align:center;font-size:24px;letter-spacing:6px;font-weight:700;background:#051513;border-radius:10px;">
-        {code}
+        {html.escape(code)}
       </div>
       <p style="opacity:.8">O código é válido por poucos minutos. Se você não solicitou, ignore este e-mail.</p>
     </div>
   </body>
 </html>
         """.strip()
+
 
 def reset_password_email_html(name: str, link: str) -> str:
     name = html.escape(name or "")
