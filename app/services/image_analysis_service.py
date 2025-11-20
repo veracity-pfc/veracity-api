@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
+from uuid import UUID
 
 import filetype
 import httpx
+from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ip_hash_from_request
@@ -117,13 +120,26 @@ class ImageAnalysisService:
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
             return payload
 
+    async def run_analysis(self, user_id: UUID, file_content: bytes):
+        mime = _detect_mime(file_content)
+        ext = mimetypes.guess_extension(mime or "") or ".bin"
+        filename = f"api_upload_{datetime.now().timestamp()}{ext}"
+
+        return await self.analyze(
+            upload_bytes=file_content,
+            filename=filename,
+            content_type=mime or "application/octet-stream",
+            request=None,
+            user_id=str(user_id),
+        )
+
     async def analyze(
         self,
         *,
         upload_bytes: bytes,
         filename: str,
         content_type: str,
-        request,
+        request: Optional[Request] = None,
         user_id: Optional[str],
     ):
         if not upload_bytes:
@@ -135,8 +151,12 @@ class ImageAnalysisService:
         if (_detect_mime(upload_bytes) or "") not in ALLOWED_MIMES:
             raise ValueError("Conteúdo não reconhecido como PNG ou JPEG válido.")
 
-        actor_hash = ip_hash_from_request(request)
-        resolved_user_id = resolve_user_id(request, user_id)
+        if request:
+            actor_hash = ip_hash_from_request(request)
+            resolved_user_id = resolve_user_id(request, user_id)
+        else:
+            actor_hash = None
+            resolved_user_id = user_id
 
         used_today, limit, scope = await check_daily_limit(
             self.session,

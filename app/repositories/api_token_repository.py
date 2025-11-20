@@ -35,12 +35,14 @@ class ApiTokenRepository:
         token_hash: str,
         token_prefix: str,
         expires_at: datetime,
+        encrypted_token: str,
     ) -> ApiToken:
         token = ApiToken(
             user_id=user_id,
             token_hash=token_hash,
             token_prefix=token_prefix,
             expires_at=expires_at,
+            encrypted_token=encrypted_token,
         )
         self.session.add(token)
         await self.session.flush()
@@ -50,12 +52,22 @@ class ApiTokenRepository:
     async def get(self, token_id: UUID) -> Optional[ApiToken]:
         return await self.session.get(ApiToken, token_id)
 
+    async def get_by_hash(self, token_hash: str) -> Optional[ApiToken]:
+        stmt = select(ApiToken).where(ApiToken.token_hash == token_hash)
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def mark_revealed(self, token: ApiToken, revealed_at: datetime):
+        token.revealed_at = revealed_at
+        self.session.add(token)
+        await self.session.flush()
+
     async def revoke(
         self,
         token: ApiToken,
         *,
         reason: Optional[str],
-        admin_id: UUID,
+        admin_id: UUID | None,
         now: datetime,
     ) -> ApiToken:
         token.status = ApiTokenStatus.revoked

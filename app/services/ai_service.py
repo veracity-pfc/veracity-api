@@ -2,39 +2,18 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
 
 import httpx
+from tld import get_tld
 
 from app.core.config import settings
-from app.core.constants import IANA_TTL_SEC, IANA_URL, GENERIC_ANALYSIS_ERROR, HAS_DIGIT_RE
+from app.core.constants import GENERIC_ANALYSIS_ERROR, HAS_DIGIT_RE
 
 logger = logging.getLogger("veracity.ai_service")
-
-IANA_TLDS: set[str] | None = None
-IANA_FETCH_TS: float | None = None
-
-async def _load_iana_tlds(client: httpx.AsyncClient) -> set[str]:
-    global IANA_TLDS, IANA_FETCH_TS
-    now = time.time()
-    if IANA_TLDS is not None and IANA_FETCH_TS and (now - IANA_FETCH_TS) < IANA_TTL_SEC:
-        return IANA_TLDS
-
-    t0 = time.perf_counter()
-    r = await client.get(IANA_URL, timeout=settings.http_timeout)
-    ms = round((time.perf_counter() - t0) * 1000, 1)
-    logger.info("iana.tlds.fetch", extra={"status": r.status_code, "ms": ms})
-    r.raise_for_status()
-
-    lines = r.text.splitlines()
-    tlds = {ln.strip().lower() for ln in lines if ln and not ln.startswith("#")}
-    IANA_TLDS, IANA_FETCH_TS = tlds, now
-    logger.info("iana.tlds.loaded", extra={"count": len(tlds)})
-    return tlds
 
 
 @dataclass(slots=True)
@@ -55,20 +34,28 @@ class URLSignals:
 
 def _compute_signals(
     url: str,
-    tld_set: set[str],
     *,
     tld_ok_input: bool,
     dns_ok: bool,
 ) -> URLSignals:
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
-    tld = host.rsplit(".", 1)[-1] if "." in host else ""
+    
+    try:
+        res = get_tld(url, as_object=True, fix_protocol=True)
+        tld = res.tld
+        tld_valid = True
+    except Exception:
+        tld = ""
+        tld_valid = False
+
     sub_count = max(0, host.count(".") - 1)
+    
     return URLSignals(
         url=url,
         host=host,
-        tld=tld,
-        tld_in_iana=(tld in tld_set) if tld else False,
+        tld=str(tld),
+        tld_in_iana=tld_valid,
         tld_ok_input=tld_ok_input,
         dns_ok=dns_ok,
         subdomain_count=sub_count,
@@ -185,19 +172,7 @@ class AIService:
         close_client = self.client is None
 
         try:
-            try:
-                iana_tlds = await _load_iana_tlds(client)
-            except Exception as exc:
-                logger.exception(
-                    "iana.tlds.error",
-                    extra={
-                        "error_type": type(exc).__name__,
-                        "error_message": str(exc),
-                    },
-                )
-                raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
-
-            sig = _compute_signals(url, iana_tlds, tld_ok_input=tld_ok, dns_ok=dns_ok)
+            sig = _compute_signals(url, tld_ok_input=tld_ok, dns_ok=dns_ok)
             prompt = _build_prompt(gsb_json or {}, sig)
             
             try:
@@ -216,8 +191,6 @@ class AIService:
                     },
                 )
                 raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
-
-
 
             if not isinstance(out, dict) or not all(
                 k in out for k in ("classification", "explanation", "recommendations")
@@ -263,7 +236,6 @@ class AIService:
                 )
                 raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
 
-
             if not isinstance(out, dict) or not all(
                 k in out for k in ("explanation", "recommendations")
             ):
@@ -272,7 +244,6 @@ class AIService:
                     extra={"raw": str(out)[:500]},
                 )
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
-
 
             explanation = " ".join(str(out.get("explanation", "")).split())
             out["explanation"] = explanation

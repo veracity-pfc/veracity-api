@@ -7,8 +7,10 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlsplit
+from uuid import UUID
 
 import httpx
+from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ip_hash_from_request
@@ -116,9 +118,26 @@ class UrlAnalysisService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def analyze(self, *, url_in: str, request, user_id: Optional[str]):
-        actor_hash = ip_hash_from_request(request)
-        resolved_user_id = resolve_user_id(request, user_id)
+    async def run_analysis(self, user_id: UUID, url: str):
+        return await self.analyze(
+            url_in=url,
+            request=None,
+            user_id=str(user_id),
+        )
+
+    async def analyze(
+        self,
+        *,
+        url_in: str,
+        request: Optional[Request] = None,
+        user_id: Optional[str],
+    ):
+        if request:
+            actor_hash = ip_hash_from_request(request)
+            resolved_user_id = resolve_user_id(request, user_id)
+        else:
+            actor_hash = None
+            resolved_user_id = user_id
 
         used_today, limit, scope = await check_daily_limit(
             self.session,
