@@ -11,10 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.api_token_model import ApiToken
 from app.domain.api_token_request_model import ApiTokenRequest
+from app.domain.audit_model import AuditLog
 from app.domain.enums import ApiTokenRequestStatus, ApiTokenStatus
 from app.repositories.api_token_repository import (
     ApiTokenRepository,
     ApiTokenRequestRepository,
+)
+from app.repositories.audit_repo import AuditRepository
+from app.services.email_service import (
+    EmailError,
+    build_api_token_approved_email_html,
+    build_api_token_rejected_email_html,
+    send_email,
 )
 from app.services.history_service import normalize_date_range
 
@@ -114,6 +122,35 @@ class ApiTokenService:
         await self.session.refresh(req)
         await self.session.refresh(token)
 
+        audit_repo = AuditRepository(self.session)
+        email_sent = False
+
+        try:
+            html = build_api_token_approved_email_html()
+            await send_email(
+                to=req.email,
+                subject="Token de API gerado com sucesso",
+                html_body=html,
+            )
+            email_sent = True
+        except EmailError:
+            email_sent = False
+
+        await audit_repo.insert(
+            table=AuditLog,
+            user_id=req.user_id,
+            actor_ip_hash=None,
+            action="api_token_request.approve",
+            resource=f"/administration/api/token-requests/{req.id}",
+            success=True,
+            details={
+                "request_id": str(req.id),
+                "token_id": str(token.id),
+                "email_sent": email_sent,
+            },
+        )
+        await self.session.commit()
+
         return req, token, plain
 
     async def reject_request(
@@ -138,6 +175,35 @@ class ApiTokenService:
 
         await self.session.commit()
         await self.session.refresh(req)
+
+        audit_repo = AuditRepository(self.session)
+        email_sent = False
+
+        try:
+            html = build_api_token_rejected_email_html(reason=reason)
+            await send_email(
+                to=req.email,
+                subject="Solicitação de token de API rejeitada",
+                html_body=html,
+            )
+            email_sent = True
+        except EmailError:
+            email_sent = False
+
+        await audit_repo.insert(
+            table=AuditLog,
+            user_id=req.user_id,
+            actor_ip_hash=None,
+            action="api_token_request.reject",
+            resource=f"/administration/api/token-requests/{req.id}",
+            success=True,
+            details={
+                "request_id": str(req.id),
+                "email_sent": email_sent,
+            },
+        )
+        await self.session.commit()
+
         return req
 
     async def revoke_token(

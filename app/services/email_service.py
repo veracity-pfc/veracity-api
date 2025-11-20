@@ -86,6 +86,48 @@ def build_api_token_request_email_html(
     )
 
 
+def build_api_token_approved_email_html() -> str:
+    body = (
+        "Seu token de API foi gerado com sucesso.\n\n"
+        "Você já pode visualizá-lo na tela de perfil do Veracity. "
+        "Guarde o token em local seguro e não o compartilhe com terceiros.\n\n"
+        "Se você não reconhece esta solicitação, entre em contato com o suporte."
+    )
+    return (
+        "<!doctype html><html><body style='font-family:Arial,sans-serif'>"
+        f"<pre style='white-space:pre-wrap;font-size:14px;line-height:1.5'>"
+        f"{html.escape(body)}"
+        "</pre>"
+        "</body></html>"
+    )
+
+
+def build_api_token_rejected_email_html(reason: str) -> str:
+    reason_escaped = html.escape(reason or "")
+    return f"""
+<!doctype html>
+<html>
+  <body style="font-family:Arial,sans-serif;background:#0b1211;padding:24px;color:#eef2f1">
+    <div style="max-width:520px;margin:0 auto;background:#0e1b19;border-radius:12px;padding:24px">
+      <h2 style="margin:0 0 8px">Sua solicitação de token de API foi rejeitada.</h2>
+      <div style="margin:14px 0 18px;padding:14px 16px;border-radius:12px;
+                  background:#061816;border:1px solid rgba(255,255,255,.08);">
+        <p style="margin:0 0 6px;font-size:13px;opacity:.85;">
+          Motivo informado pelo administrador:
+        </p>
+        <p style="margin:0;font-size:14px;line-height:1.6;white-space:pre-wrap;">
+          {reason_escaped}
+        </p>
+      </div>
+      <p style="opacity:.8;margin:0">
+        Se tiver dúvidas ou acreditar que isso ocorreu por engano, entre em contato com o suporte do Veracity.
+      </p>
+    </div>
+  </body>
+</html>
+    """.strip()
+
+
 def reactivate_account_email_html(name: str, code: str) -> str:
     return f"""
 <!doctype html>
