@@ -16,6 +16,7 @@ from sqlalchemy.orm import relationship
 from app.core.database import Base
 from app.domain.enums import ApiTokenStatus
 
+
 class ApiToken(Base):
     __tablename__ = "api_tokens"
 
@@ -54,6 +55,8 @@ class ApiToken(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
+    encrypted_token = Column(Text)
+    revealed_at = Column(TIMESTAMP(timezone=True))
 
     user = relationship("User", foreign_keys=[user_id], lazy="joined")
     revoked_by_admin = relationship(

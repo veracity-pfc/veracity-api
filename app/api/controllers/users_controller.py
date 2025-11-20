@@ -6,15 +6,14 @@ from secrets import randbelow
 from typing import Dict
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
 from sqlalchemy import select, update, delete, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from app.schemas.user import ReactivateConfirmPayload, ReactivateAccountPayload
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_session
 from app.core.constants import EMAIL_RE
-from app.domain.enums import AnalysisType, UserStatus
+from app.domain.enums import AnalysisType, UserStatus, ApiTokenStatus
 from app.domain.user_model import User
 from app.domain.audit_model import AuditLog
 from app.domain.url_analysis_model import UrlAnalysis
@@ -22,17 +21,13 @@ from app.domain.image_analysis_model import ImageAnalysis
 from app.domain.password_reset import PasswordReset
 from app.domain.pending_email_change_model import PendingEmailChange
 from app.domain.analysis_model import Analysis
+from app.domain.api_token_model import ApiToken
 from app.repositories.analysis_repo import AnalysisRepository
 from app.repositories.audit_repo import AuditRepository
 from app.services.user_service import UserService
+from app.services.api_token_service import ApiTokenService
 
 router = APIRouter(prefix="/user", tags=["user"])
-class ReactivateAccountPayload(BaseModel):
-    email: str
-
-class ReactivateConfirmPayload(BaseModel):
-    email: str
-    code: str
 
 
 def _quotas() -> Dict[str, int]:
@@ -68,14 +63,28 @@ async def get_profile(
     quotas = _quotas()
     remaining = {
         "urls": max(int(quotas["urls"]) - int(today_map.get(AnalysisType.url, 0)), 0),
-        "images": max(
-            int(quotas["images"]) - int(today_map.get(AnalysisType.image, 0)),
-            0,
-        ),
+        "images": max(int(quotas["images"]) - int(today_map.get(AnalysisType.image, 0)), 0),
     }
 
+    stmt = (
+        select(ApiToken)
+        .where(ApiToken.user_id == user.id, ApiToken.status == ApiTokenStatus.active)
+        .order_by(ApiToken.created_at.desc())
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    token = result.scalar_one_or_none()
+
+    token_info = None
+    if token:
+        token_info = {
+            "prefix": token.token_prefix,
+            "status": token.status.value,
+            "expires_at": token.expires_at.isoformat() if token.expires_at else None,
+            "revealed": token.revealed_at is not None,
+        }
+
     return {
-        "id": str(user.id),
         "name": user.name,
         "email": user.email,
         "stats": {
@@ -85,8 +94,32 @@ async def get_profile(
                 "images": int(total_map.get(AnalysisType.image, 0)),
             },
         },
+        "api_token_info": token_info,
     }
-    
+
+
+@router.post("/api-token/reveal")
+async def reveal_api_token(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    service = ApiTokenService(session)
+    token_value, expires_at = await service.reveal_token_for_user(user.id)
+    return {
+        "token": token_value,
+        "expires_at": expires_at.isoformat() if expires_at else None,
+    }
+
+
+@router.post("/api-token/revoke")
+async def revoke_api_token(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    service = ApiTokenService(session)
+    await service.revoke_token_by_user(user.id)
+    return {"ok": True}
+
 
 @router.patch("/profile/name")
 async def update_name(
@@ -110,6 +143,7 @@ async def update_name(
     await session.commit()
     return {"ok": True, "name": new_name}
 
+
 @router.patch("/profile/name", name="validate_name")
 async def validate_name_only(
     payload: dict = Body(...),
@@ -123,6 +157,7 @@ async def validate_name_only(
     if len(new_name) < 3 or len(new_name) > 30:
         raise HTTPException(status_code=400, detail="Nome deve ter entre 3 e 30 caracteres.")
     return {"ok": True}
+
 
 @router.post("/profile/email-change/request")
 async def request_email_change(
@@ -158,6 +193,7 @@ async def request_email_change(
     )
     await session.commit()
     return {"ok": True, "requires_verification": True}
+
 
 @router.post("/profile/email-change/confirm")
 async def confirm_email_change(
@@ -199,6 +235,7 @@ async def confirm_email_change(
     await session.commit()
     return {"ok": True, "email": pending.new_email}
 
+
 @router.patch("/account")
 async def inactivate_account(
     user: User = Depends(get_current_user),
@@ -215,6 +252,7 @@ async def inactivate_account(
     )
     await session.commit()
     return {"ok": True, "status": "inactive"}
+
 
 @router.delete("/account")
 async def delete_account(
@@ -238,7 +276,6 @@ async def delete_account(
     )
     await session.commit()
     return {"ok": True}
-
 
 
 @router.post("/reactivate-account/validate")
@@ -401,4 +438,3 @@ async def confirm_reactivate_code(
     )
 
     return {"detail": "Conta reativada com sucesso."}
-

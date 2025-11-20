@@ -5,8 +5,9 @@ from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from app.domain.enums import ApiTokenRequestStatus, ApiTokenStatus
 
-from app.domain.enums import ApiTokenRequestStatus
+from typing import List
 
 
 class ApiTokenRequestBase(BaseModel):
@@ -36,3 +37,25 @@ class ApiTokenRequestRead(ApiTokenRequestBase):
     related_token_id: Optional[UUID] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ApiTokenRequestListItem(BaseModel):
+    id: UUID
+    email: EmailStr
+    message_preview: str
+    status: ApiTokenRequestStatus
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ApiTokenRequestPageOut(BaseModel):
+    items: List[ApiTokenRequestListItem]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
+
+
+class RejectBody(BaseModel):
+    reason: str

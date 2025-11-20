@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
-
-from pydantic import BaseModel, ConfigDict, Field
+from typing import List
+from pydantic import BaseModel, ConfigDict, Field, EmailStr
 
 from app.domain.enums import ApiTokenStatus
 
@@ -19,6 +19,7 @@ class ApiTokenBase(BaseModel):
     revoked_at: Optional[datetime] = None
     revoked_reason: Optional[str] = None
     revoked_by_admin_id: Optional[UUID] = None
+    revealed_at: Optional[datetime] = None
 
 
 class ApiTokenCreate(BaseModel):
@@ -34,3 +35,23 @@ class ApiTokenRead(ApiTokenBase):
 
 class ApiTokenWithPlainValue(ApiTokenRead):
     token: str
+
+
+class ApiTokenListItem(BaseModel):
+    id: UUID
+    token_prefix: str
+    status: ApiTokenStatus
+    created_at: datetime
+    expires_at: datetime
+    last_used_at: Optional[datetime]
+    user_email: EmailStr
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ApiTokenPageOut(BaseModel):
+    items: List[ApiTokenListItem]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int

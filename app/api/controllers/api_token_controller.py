@@ -1,64 +1,29 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, EmailStr
+from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_session
 from app.api.deps import get_current_user, get_db
 from app.domain.enums import ApiTokenRequestStatus, ApiTokenStatus
 from app.domain.user_model import User
-from app.schemas.api_token import ApiTokenRead
-from app.schemas.api_token_request import ApiTokenRequestRead
+from app.schemas.api_token import ApiTokenRead, ApiTokenPageOut, ApiTokenListItem
+from app.schemas.api_token_request import (
+    ApiTokenRequestRead,
+    ApiTokenRequestPageOut,
+    ApiTokenRequestListItem,
+    RejectBody,
+)
 from app.services.api_token_service import ApiTokenService
+from app.services.url_analysis_service import UrlAnalysisService
+from app.services.image_analysis_service import ImageAnalysisService
 
 
 router = APIRouter(prefix="/administration/api", tags=["API Tokens"])
-
-
-class ApiTokenRequestListItem(BaseModel):
-    id: UUID
-    email: EmailStr
-    message_preview: str
-    status: ApiTokenRequestStatus
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class ApiTokenRequestPageOut(BaseModel):
-    items: List[ApiTokenRequestListItem]
-    page: int
-    page_size: int
-    total: int
-    total_pages: int
-
-
-class ApiTokenListItem(BaseModel):
-    id: UUID
-    token_prefix: str
-    status: ApiTokenStatus
-    created_at: datetime
-    expires_at: datetime
-    last_used_at: Optional[datetime]
-    user_email: EmailStr
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class ApiTokenPageOut(BaseModel):
-    items: List[ApiTokenListItem]
-    page: int
-    page_size: int
-    total: int
-    total_pages: int
-
-
-class RejectBody(BaseModel):
-    reason: str
 
 
 @router.get(
@@ -249,3 +214,49 @@ async def revoke_token(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return token
+
+
+@router.post("/auth")
+async def token_auth(
+    token: str = Body(...),
+    session: AsyncSession = Depends(get_session),
+):
+    svc = ApiTokenService(session)
+    t = await svc.validate_token(token)
+    return {"ok": True, "user_id": str(t.user_id), "expires_at": t.expires_at}
+
+
+@router.post("/refresh")
+async def token_refresh(
+    token: str = Body(...),
+    session: AsyncSession = Depends(get_session),
+):
+    svc = ApiTokenService(session)
+    new_token = await svc.refresh_token(token)
+    return {"token": new_token}
+
+
+@router.post("/url-analysis")
+async def token_url_analysis(
+    token: str = Body(...),
+    url: str = Body(...),
+    session: AsyncSession = Depends(get_session),
+):
+    svc = ApiTokenService(session)
+    token_obj = await svc.validate_token(token)
+    analysis = UrlAnalysisService(session)
+    result = await analysis.run_analysis(token_obj.user_id, url)
+    return result
+
+
+@router.post("/image-analysis")
+async def token_image_analysis(
+    token: str = Body(...),
+    image_url: str = Body(...),
+    session: AsyncSession = Depends(get_session),
+):
+    svc = ApiTokenService(session)
+    token_obj = await svc.validate_token(token)
+    analysis = ImageAnalysisService(session)
+    result = await analysis.run_analysis(token_obj.user_id, image_url)
+    return result

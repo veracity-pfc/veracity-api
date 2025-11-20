@@ -16,3 +16,6 @@ GENERIC_ANALYSIS_ERROR = "Não foi possível processar a análise agora. Tente n
 RESEND_API = "https://api.resend.com/emails"
 
 DNS_TIMEOUT = 1.2
+
+DEFAULT_TOKEN_TTL_DAYS = 90
+TOKEN_PREFIX = "vera"

@@ -9,3 +9,10 @@ class UserOut(BaseModel):
     role: UserRole
     status: str
     created_at: datetime
+
+class ReactivateAccountPayload(BaseModel):
+  email: str
+
+class ReactivateConfirmPayload(BaseModel):
+  email: str
+  code: str
