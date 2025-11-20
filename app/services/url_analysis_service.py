@@ -19,7 +19,7 @@ from app.domain.analysis_model import Analysis
 from app.domain.audit_model import AuditLog
 from app.domain.enums import AnalysisStatus, AnalysisType, RiskLabel
 from app.domain.url_analysis_model import UrlAnalysis
-from app.repositories.audit_repo import AuditRepository
+from app.repositories.audit_repository import AuditRepository
 from app.schemas.url_analysis import has_valid_tld
 from app.services.ai_service import AIService
 from app.services.common import resolve_user_id

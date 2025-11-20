@@ -23,7 +23,7 @@ from app.repositories.api_token_repository import (
     ApiTokenRepository,
     ApiTokenRequestRepository,
 )
-from app.repositories.audit_repo import AuditRepository
+from app.repositories.audit_repository import AuditRepository
 from app.services.email_service import (
     EmailError,
     build_api_token_approved_email_html,

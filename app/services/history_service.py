@@ -8,7 +8,7 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import RiskLabel
-from app.repositories.analysis_repo import AnalysisRepository
+from app.repositories.analysis_repository import AnalysisRepository
 from app.schemas.history import HistoryDetailOut, HistoryItemOut, HistoryPageOut
 from app.domain.ai_model import AIResponse
 from app.domain.image_analysis_model import ImageAnalysis

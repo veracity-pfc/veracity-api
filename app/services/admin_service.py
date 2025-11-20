@@ -4,8 +4,8 @@ from typing import Any, Dict
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.repositories.analysis_repo import AnalysisRepository
-from app.repositories.admin_repo import AdminRepository
+from app.repositories.analysis_repository import AnalysisRepository
+from app.repositories.admin_repository import AdminRepository
 
 
 class AdminDashboardService:

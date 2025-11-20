@@ -22,8 +22,8 @@ from app.domain.password_reset import PasswordReset
 from app.domain.pending_email_change_model import PendingEmailChange
 from app.domain.analysis_model import Analysis
 from app.domain.api_token_model import ApiToken
-from app.repositories.analysis_repo import AnalysisRepository
-from app.repositories.audit_repo import AuditRepository
+from app.repositories.analysis_repository import AnalysisRepository
+from app.repositories.audit_repository import AuditRepository
 from app.services.user_service import UserService
 from app.services.api_token_service import ApiTokenService
 

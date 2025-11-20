@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.domain.enums import UserStatus
-from app.repositories.user_repo import UserRepository
+from app.repositories.user_repository import UserRepository
 from app.services.email_service import send_email, reactivate_account_email_html
 
 

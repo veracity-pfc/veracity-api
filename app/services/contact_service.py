@@ -16,7 +16,7 @@ from app.domain.api_token_request_model import ApiTokenRequest
 from app.domain.audit_model import AuditLog
 from app.domain.enums import ApiTokenStatus
 from app.domain.user_model import User
-from app.repositories.audit_repo import AuditRepository
+from app.repositories.audit_repository import AuditRepository
 from app.schemas.contact import ALLOWED_SUBJECTS
 from app.services.email_service import (
     EmailError,

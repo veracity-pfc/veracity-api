@@ -14,10 +14,10 @@ from app.core.security import create_access_token, hash_password, verify_passwor
 from app.domain.audit_model import AuditLog
 from app.domain.enums import UserRole, UserStatus
 from app.domain.user_model import User
-from app.repositories.audit_repo import AuditRepository
-from app.repositories.password_reset_repo import PasswordResetRepository
-from app.repositories.pending_registration_repo import PendingRegistrationRepository
-from app.repositories.user_repo import UserRepository
+from app.repositories.audit_repository import AuditRepository
+from app.repositories.password_reset_repository import PasswordResetRepository
+from app.repositories.pending_registration_repository import PendingRegistrationRepository
+from app.repositories.user_repository import UserRepository
 from app.services.email_service import (
     EmailError,
     reset_password_email_html,
