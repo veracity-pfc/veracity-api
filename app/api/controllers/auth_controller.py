@@ -17,7 +17,7 @@ from app.schemas.auth import (
 )
 from app.schemas.common import OkOut
 from app.services.auth_service import AuthService
-from app.repositories.user_repo import UserRepository
+from app.repositories.user_repository import UserRepository
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
