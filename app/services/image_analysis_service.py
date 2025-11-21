@@ -18,6 +18,7 @@ from app.core.constants import GENERIC_ANALYSIS_ERROR, ALLOWED_MIMES
 from app.domain.ai_model import AIResponse
 from app.domain.analysis_model import Analysis
 from app.domain.audit_model import AuditLog
+from app.core.constants import SIGHTENGINE_API_URL
 from app.domain.enums import AnalysisStatus, AnalysisType, RiskLabel
 from app.domain.image_analysis_model import ImageAnalysis
 from app.repositories.audit_repository import AuditRepository
@@ -94,7 +95,7 @@ class ImageAnalysisService:
         async with httpx.AsyncClient(timeout=settings.http_timeout) as client:
             try:
                 r = await client.post(
-                    "https://api.sightengine.com/1.0/check.json",
+                    SIGHTENGINE_API_URL,
                     data=data,
                     files=files,
                 )

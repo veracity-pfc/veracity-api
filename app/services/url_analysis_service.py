@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -17,6 +17,7 @@ from app.api.deps import ip_hash_from_request
 from app.core.config import settings
 from app.core.constants import DNS_TIMEOUT, GENERIC_ANALYSIS_ERROR
 from app.domain.ai_model import AIResponse
+from app.core.constants import GSB_API_URL
 from app.domain.analysis_model import Analysis
 from app.domain.audit_model import AuditLog
 from app.domain.enums import AnalysisStatus, AnalysisType, RiskLabel
@@ -73,7 +74,7 @@ async def gsb_check(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
     
     try:
         r = await client.post(
-            f"https://safebrowsing.googleapis.com/v4/threatMatches:find",
+            GSB_API_URL,
             headers={"X-Goog-Api-Key": settings.gsb_api_key},
             json=body,
         )

@@ -6,8 +6,9 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 PASSWORD_POLICY = re.compile(r"^(?=.{8,30}$)(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*\W).+$")
 
-IANA_TTL_SEC = 24 * 60 * 60
-IANA_URL = "https://data.iana.org/TLD/tlds-alpha-by-domain.txt"
+GSB_API_URL = "https://safebrowsing.googleapis.com/v4/threatMatches:find"
+
+SIGHTENGINE_API_URL = "https://api.sightengine.com/1.0/check.json"
 
 HAS_DIGIT_RE = re.compile(r"\d")
 
