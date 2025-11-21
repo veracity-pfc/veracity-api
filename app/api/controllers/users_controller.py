@@ -4,6 +4,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from secrets import randbelow
 from typing import Dict
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy import select, update, delete, func, and_
@@ -49,15 +50,17 @@ async def get_profile(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    now = datetime.now(timezone.utc)
-    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    end = start + timedelta(days=1)
+    tz = ZoneInfo("America/Sao_Paulo")
+    now = datetime.now(tz)
+    start_local = datetime(now.year, now.month, now.day, tzinfo=tz)
+    start_utc = start_local.astimezone(timezone.utc)
+    end_utc = start_utc + timedelta(days=1)
 
     repo = AnalysisRepository(session)
     today_map, total_map = await repo.user_counts(
         user_id=str(user.id),
-        day_start=start,
-        day_end=end,
+        day_start=start_utc,
+        day_end=end_utc,
     )
 
     quotas = _quotas()
@@ -104,7 +107,7 @@ async def reveal_api_token(
     session: AsyncSession = Depends(get_session),
 ):
     service = ApiTokenService(session)
-    token_value, expires_at = await service.reveal_token_for_user(user.id)
+    token_value, expires_at = await service.reveal_token_for_user(user_id=user.id)
     return {
         "token": token_value,
         "expires_at": expires_at.isoformat() if expires_at else None,
@@ -116,8 +119,21 @@ async def revoke_api_token(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    service = ApiTokenService(session)
-    await service.revoke_token_by_user(user.id)
+    stmt = select(ApiToken).where(
+        ApiToken.user_id == user.id, 
+        ApiToken.status == ApiTokenStatus.active
+    ).limit(1)
+    res = await session.execute(stmt)
+    token = res.scalar_one_or_none()
+    
+    if token:
+        service = ApiTokenService(session)
+        await service.revoke_token_by_user(
+            user_id=user.id, 
+            token_id=token.id, 
+            reason="Revogado pelo usuário"
+        )
+    
     return {"ok": True}
 
 

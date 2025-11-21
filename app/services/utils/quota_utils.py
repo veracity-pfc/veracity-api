@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,11 +19,14 @@ async def _count_today(
     user_id: Optional[str],
     actor_hash: Optional[str],
 ) -> int:
-    now = datetime.now(timezone.utc)
-    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    tz = ZoneInfo("America/Sao_Paulo")
+    now = datetime.now(tz)
+    start_local = datetime(now.year, now.month, now.day, tzinfo=tz)
+    start_utc = start_local.astimezone(timezone.utc)
+    
     q = select(func.count(Analysis.id)).where(
         Analysis.analysis_type == analysis_type,
-        Analysis.created_at >= start,
+        Analysis.created_at >= start_utc,
     )
     if user_id:
         q = q.where(Analysis.user_id == user_id)
