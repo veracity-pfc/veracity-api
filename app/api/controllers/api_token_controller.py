@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from typing import List
+from urllib.parse import urlsplit
 
 import filetype
-from fastapi import APIRouter, Depends, Body, UploadFile, File, Security, HTTPException
+from fastapi import APIRouter, Depends, Body, UploadFile, File, Security, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
-from tld import get_tld  
 
 from app.core.database import get_session
 from app.core.constants import ALLOWED_MIMES
 from app.domain.api_token_model import ApiToken
+from app.schemas.url_analysis import has_valid_tld
 from app.services.api_token_service import ApiTokenService
 from app.services.url_analysis_service import UrlAnalysisService
 from app.services.image_analysis_service import ImageAnalysisService
@@ -30,9 +31,8 @@ def _validate_url_rules(url: str):
     if not (url.lower().startswith("http://") or url.lower().startswith("https://")):
         raise HTTPException(status_code=400, detail="A URL deve começar com 'http://' ou 'https://'.")
 
-    try:
-        get_tld(url, fix_protocol=True)
-    except Exception:
+    hostname = urlsplit(url).hostname or ""
+    if not has_valid_tld(hostname.lower()):
         raise HTTPException(status_code=400, detail="A URL não possui um domínio (TLD) válido.")
 
 def _validate_image_rules(content: bytes, count: int):
@@ -83,6 +83,7 @@ async def token_refresh(
 
 @router.post("/url-analysis")
 async def token_url_analysis(
+    request: Request,  # <--- Injetar Request
     url: str = Body(..., embed=True), 
     token_obj: ApiToken = Depends(get_api_token_header),
     session: AsyncSession = Depends(get_session),
@@ -90,7 +91,8 @@ async def token_url_analysis(
     _validate_url_rules(url)
 
     analysis_svc = UrlAnalysisService(session)
-    an, url_row, ai_data = await analysis_svc.run_analysis(token_obj.user_id, url)
+    # Repassa o request
+    an, url_row, ai_data = await analysis_svc.run_analysis(token_obj.user_id, url, request)
 
     return [
         {
@@ -118,6 +120,7 @@ async def token_url_analysis(
 
 @router.post("/image-analysis")
 async def token_image_analysis(
+    request: Request, # <--- Injetar Request
     file: List[UploadFile] = File(...), 
     token_obj: ApiToken = Depends(get_api_token_header), 
     session: AsyncSession = Depends(get_session),
@@ -131,7 +134,8 @@ async def token_image_analysis(
     _validate_image_rules(file_content, len(file))
     
     analysis_svc = ImageAnalysisService(session)
-    an, img_row, ai_data = await analysis_svc.run_analysis(token_obj.user_id, file_content)
+    # Repassa o request
+    an, img_row, ai_data = await analysis_svc.run_analysis(token_obj.user_id, file_content, request)
     
     return [
         {

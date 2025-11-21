@@ -120,7 +120,7 @@ class ImageAnalysisService:
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
             return payload
 
-    async def run_analysis(self, user_id: UUID, file_content: bytes):
+    async def run_analysis(self, user_id: UUID, file_content: bytes, request: Request):
         mime = _detect_mime(file_content)
         ext = mimetypes.guess_extension(mime or "") or ".bin"
         filename = f"api_upload_{datetime.now().timestamp()}{ext}"
@@ -129,7 +129,7 @@ class ImageAnalysisService:
             upload_bytes=file_content,
             filename=filename,
             content_type=mime or "application/octet-stream",
-            request=None,
+            request=request, 
             user_id=str(user_id),
         )
 

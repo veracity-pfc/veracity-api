@@ -118,10 +118,10 @@ class UrlAnalysisService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def run_analysis(self, user_id: UUID, url: str):
+    async def run_analysis(self, user_id: UUID, url: str, request: Request):
         return await self.analyze(
             url_in=url,
-            request=None,
+            request=request, 
             user_id=str(user_id),
         )
 
