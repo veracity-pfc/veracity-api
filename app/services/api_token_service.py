@@ -401,20 +401,6 @@ class ApiTokenService:
         setattr(token, "plain_token", plain)
         return plain, token
 
-    async def refresh_token(self, old_plain: str) -> str:
-        token_hash = hashlib.sha256(old_plain.encode("utf-8")).hexdigest()
-        token = await self.tokens.get_by_hash(token_hash)
-        if not token or token.status != ApiTokenStatus.active:
-            raise HTTPException(status_code=401, detail="Token inválido ou revogado.")
-        if token.expires_at < datetime.now(timezone.utc):
-            token.status = ApiTokenStatus.expired
-            await self.session.commit()
-            raise HTTPException(status_code=401, detail="Token expirado.")
-        new_plain, new_token = await self._generate_token(token.user_id)
-        token.status = ApiTokenStatus.revoked
-        await self.session.commit()
-        return new_plain
-
     async def validate_token(self, token_plain: str) -> ApiToken:
         h = hashlib.sha256(token_plain.encode("utf-8")).hexdigest()
         token = await self.tokens.get_by_hash(h)
@@ -424,4 +410,8 @@ class ApiTokenService:
             token.status = ApiTokenStatus.expired
             await self.session.commit()
             raise HTTPException(status_code=401, detail="Token expirado.")
+        
+        token.last_used_at = datetime.now(timezone.utc)
+        await self.session.commit()
+        
         return token
