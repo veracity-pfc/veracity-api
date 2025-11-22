@@ -221,3 +221,75 @@ def reset_password_email_html(name: str, link: str) -> str:
   </body>
 </html>
     """.strip()
+    
+def build_contact_reply_email_html(subject: str, original_message: str, reply: str) -> str:
+    import html
+    clean_subject = subject.replace("Nova mensagem recebida - ", "")
+    clean_subject = html.escape(clean_subject)
+
+    limit = 300
+    escaped_original = html.escape(original_message or "")
+    if len(escaped_original) > limit:
+        display_original = f"{escaped_original[:limit].strip()}..."
+    else:
+        display_original = escaped_original
+
+    escaped_reply = html.escape(reply)
+
+    return f"""
+<!doctype html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  </head>
+  <body style="font-family: 'Segoe UI', Arial, sans-serif; background-color: #0b1211; margin: 0; padding: 0; color: #eef2f1;">
+    
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+      <tr>
+        <td style="padding: 24px 12px;" align="center">
+          
+          <div style="max-width: 600px; margin: 0 auto; background-color: #0e1b19; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); overflow: hidden;">
+            
+            <div style="padding: 32px 24px; border-bottom: 1px solid rgba(255,255,255,0.05);">
+              <h2 style="margin: 0 0 8px; font-size: 20px; color: #ffffff;">Retorno sobre sua {clean_subject}</h2>
+              <p style="margin: 0; font-size: 14px; opacity: 0.8; line-height: 1.5;">
+                Olá. Analisamos sua mensagem e trouxemos um retorno.
+              </p>
+            </div>
+
+            <div style="padding: 24px;">
+              
+              <div style="margin-bottom: 24px;">
+                <p style="margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; font-weight: bold; color: #4cd6a3;">
+                  Nossa Resposta
+                </p>
+                <div style="background-color: rgba(28, 106, 88, 0.15); border-left: 4px solid #1c6a58; padding: 16px; border-radius: 4px;">
+                  <p style="margin: 0; font-size: 15px; line-height: 1.6; white-space: pre-wrap; color: #eef2f1;">{escaped_reply}</p>
+                </div>
+              </div>
+
+              <div style="margin-top: 32px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1);">
+                <p style="margin: 0 0 8px; font-size: 12px; opacity: 0.6;">
+                  Você escreveu anteriormente:
+                </p>
+                <div style="font-style: italic; opacity: 0.7; font-size: 13px; line-height: 1.5; padding-left: 12px; border-left: 2px solid #333;">
+                  "{display_original}"
+                </div>
+              </div>
+
+            </div>
+
+            <div style="background-color: #080f0e; padding: 16px 24px; text-align: center;">
+              <p style="margin: 0; font-size: 12px; opacity: 0.5;">
+                Atenciosamente,<br>Equipe Veracity
+              </p>
+            </div>
+
+          </div>
+        </td>
+      </tr>
+    </table>
+
+  </body>
+</html>
+    """.strip()

@@ -12,6 +12,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ENUM, UUID
 from sqlalchemy.orm import relationship
+from sqlalchemy import Integer, Column
 
 from app.core.database import Base
 from app.domain.api_token_model import ApiToken
@@ -59,6 +60,7 @@ class ApiTokenRequest(Base):
         ForeignKey("api_tokens.id", ondelete="SET NULL"),
         nullable=True,
     )
+    seq_id = Column(Integer, server_default=text("0"), nullable=False)
 
     user = relationship("User", foreign_keys=[user_id], lazy="joined")
     decided_by_admin = relationship(

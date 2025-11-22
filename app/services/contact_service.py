@@ -1,183 +1,167 @@
 from __future__ import annotations
-
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Tuple, List
 from uuid import uuid4
+from math import ceil
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ip_hash_from_request
 from app.core.config import settings
-from app.core.constants import EMAIL_RE
-from app.domain.api_token_model import ApiToken
-from app.domain.api_token_request_model import ApiTokenRequest
-from app.domain.audit_model import AuditLog
-from app.domain.enums import ApiTokenStatus, ApiTokenRequestStatus
 from app.domain.user_model import User
+from app.domain.contact_request_model import ContactRequest
+from app.domain.enums import ContactCategory, ContactStatus
+from app.domain.audit_model import AuditLog
 from app.repositories.audit_repository import AuditRepository
-from app.schemas.contact import ALLOWED_SUBJECTS
 from app.services.email_service import (
     EmailError,
-    build_api_token_request_email_html,
-    build_contact_email_html,
     send_email,
+    build_contact_reply_email_html
 )
 
 logger = logging.getLogger("veracity.contact")
-
 
 class ContactService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def send_contact_message(
+    async def list_requests(
         self,
-        *,
+        page: int,
+        page_size: int,
+        status: Optional[ContactStatus] = None,
+        category: Optional[ContactCategory] = None,
+        email: Optional[str] = None
+    ) -> Tuple[int, int, List[ContactRequest]]:
+        stmt = select(ContactRequest)
+        
+        if status:
+            stmt = stmt.where(ContactRequest.status == status)
+        if category:
+            stmt = stmt.where(ContactRequest.category == category)
+        if email:
+            stmt = stmt.where(func.lower(ContactRequest.email).contains(email.lower()))
+            
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total = (await self.session.execute(count_stmt)).scalar() or 0
+        
+        stmt = stmt.order_by(desc(ContactRequest.created_at))
+        stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+        
+        rows = (await self.session.execute(stmt)).scalars().all()
+        total_pages = ceil(total / page_size) if page_size > 0 else 1
+        
+        return total, total_pages, list(rows)
+
+    async def _check_rate_limit(self, user_id: Optional[uuid4], category: ContactCategory):
+        if not user_id:
+            return
+
+        if category in [ContactCategory.doubt, ContactCategory.complaint]:
+            stmt = select(func.count(ContactRequest.id)).where(
+                ContactRequest.user_id == user_id,
+                ContactRequest.category == category,
+                ContactRequest.status == ContactStatus.open
+            )
+            res = await self.session.execute(stmt)
+            count = res.scalar() or 0
+            if count > 0:
+                msg = "dúvida" if category == ContactCategory.doubt else "reclamação"
+                raise ValueError(f"Você já possui uma {msg} em aberto. Aguarde a resposta antes de enviar outra.")
+        
+        elif category == ContactCategory.suggestion:
+            now = datetime.now(timezone.utc)
+            one_day_ago = now - timedelta(days=1)
+            stmt = select(func.count(ContactRequest.id)).where(
+                ContactRequest.user_id == user_id,
+                ContactRequest.category == category,
+                ContactRequest.created_at >= one_day_ago
+            )
+            res = await self.session.execute(stmt)
+            count = res.scalar() or 0
+            if count >= 3:
+                raise ValueError("Você atingiu o limite de 3 sugestões por dia.")
+
+    async def create_request(
+        self,
+        user: Optional[User],
         email: str,
+        category: ContactCategory,
         subject: str,
         message: str,
-        request,
+        request_obj
     ) -> None:
+        audit = AuditRepository(self.session)
+        ip_hash = ip_hash_from_request(request_obj)
+        
+        user_id = user.id if user else None
 
-        email = (email or "").strip()
-        subject = (subject or "").strip()
-        message = (message or "").strip()
+        await self._check_rate_limit(user_id, category)
 
-        if not email:
-            raise ValueError("O e-mail deve ser preenchido.")
-
-        if len(email) > 60:
-            raise ValueError("O e-mail deve ter no máximo 60 caracteres.")
-
-        if not EMAIL_RE.match(email):
-            raise ValueError("O e-mail informado é inválido.")
-
-        if not subject or subject not in ALLOWED_SUBJECTS:
-            print(F"ASSUNTO {subject}")
-            raise ValueError("Assunto inválido.")
-
-        if not message:
-            raise ValueError("A mensagem deve ser preenchida.")
-
-        if len(message) > 4000:
-            raise ValueError("A mensagem deve ter no máximo 4000 caracteres.")
-
-        contact_to: Optional[str] = getattr(settings, "contact_email", None) or getattr(
-            settings, "resend_from", None
+        new_req = ContactRequest(
+            user_id=user_id, 
+            email=email,
+            category=category,
+            subject=subject,
+            message=message,
+            status=ContactStatus.open
         )
-        if not contact_to:
-            raise ValueError("Configuração de e-mail não encontrada.")
+        self.session.add(new_req)
+        
+        await audit.insert(
+            AuditLog,
+            user_id=user_id,
+            actor_ip_hash=ip_hash,
+            action="contact.create",
+            resource="/contact-us",
+            success=True,
+            details={"category": category.value, "subject": subject, "email": email}
+        )
+        await self.session.commit()
 
-        actor_hash = ip_hash_from_request(request)
-        lower_subject = subject.lower()
-        is_token_request = "solicitação de token de api" in lower_subject
+    async def reply_request(
+        self,
+        request_id: uuid4,
+        admin_user: User,
+        reply_message: str
+    ) -> ContactRequest:
+        stmt = select(ContactRequest).where(ContactRequest.id == request_id)
+        res = await self.session.execute(stmt)
+        req = res.scalar_one_or_none()
+        
+        if not req:
+            raise ValueError("Solicitação não encontrada.")
+        
+        if req.status != ContactStatus.open:
+            raise ValueError("Esta solicitação já foi respondida.")
 
-        token_request: Optional[ApiTokenRequest] = None
-        token_request_user: Optional[User] = None
-        token_request_created_at: Optional[datetime] = None
-        token_request_id = None
-        audit_user: Optional[User] = None
-
-        if is_token_request:
-            stmt_user = select(User).where(func.lower(User.email) == email.lower())
-            result_user = await self.session.execute(stmt_user)
-            token_request_user = result_user.scalar_one_or_none()
-            if not token_request_user:
-                raise ValueError(
-                    "O e-mail fornecido não foi encontrado. Verifique e tente novamente."
-                )
-
-            audit_user = token_request_user
-
-            stmt_has_token = select(func.count(ApiToken.id)).where(
-                ApiToken.user_id == token_request_user.id,
-                ApiToken.status == ApiTokenStatus.active,
-            )
-            result_token = await self.session.execute(stmt_has_token)
-            if (result_token.scalar_one() or 0) > 0:
-                raise ValueError("Você já possui um token de API ativo.")
-
-            stmt_has_open_req = select(func.count(ApiTokenRequest.id)).where(
-                ApiTokenRequest.user_id == token_request_user.id,
-                ApiTokenRequest.status == ApiTokenRequestStatus.open,
-            )
-            result_open_req = await self.session.execute(stmt_has_open_req)
-            if (result_open_req.scalar_one() or 0) > 0:
-                raise ValueError("Você já possui uma solicitação de token em análise.")
-
-            token_request_created_at = datetime.now(timezone.utc)
-            token_request_id = uuid4()
-            created_fmt = token_request_created_at.strftime("%d/%m/%Y %H:%M:%S")
-            html = build_api_token_request_email_html(
-                email=email,
-                created_at=created_fmt,
-                request_id=str(token_request_id),
-            )
-            email_subject = "Nova solicitação de token de API"
-        else:
-            stmt_user = select(User).where(func.lower(User.email) == email.lower())
-            result_user = await self.session.execute(stmt_user)
-            audit_user = result_user.scalar_one_or_none()
-
-            html = build_contact_email_html(email=email, subject=subject, message=message)
-            email_subject = f"Nova mensagem recebida - {subject}"
-
-        success = False
+        now = datetime.now(timezone.utc)
+        req.status = ContactStatus.answered
+        req.admin_reply = reply_message
+        req.replied_at = now
+        req.replied_by_admin_id = admin_user.id
+        
         try:
-            await send_email(
-                to=contact_to,
-                subject=email_subject,
-                html_body=html,
-            )
-            success = True
-
-            if (
-                is_token_request
-                and token_request_user
-                and token_request_created_at
-                and token_request_id
-            ):
-                token_request = ApiTokenRequest(
-                    id=token_request_id,
-                    user_id=token_request_user.id,
-                    email=email,
-                    message=message,
-                    status=ApiTokenRequestStatus.open,
-                    created_at=token_request_created_at,
-                )
-                self.session.add(token_request)
+            html = build_contact_reply_email_html(req.subject, req.message, reply_message)
+            await send_email(req.email, f"Resposta: {req.subject}", html)
         except EmailError:
-            logger.error("contact.email_failed")
-            raise ValueError(
-                "Não foi possível enviar a mensagem agora. Tente novamente mais tarde."
-            )
-        finally:
-            audit_repo = AuditRepository(self.session)
+            logger.error(f"Falha ao enviar email de resposta para {req.id}")
 
-            await audit_repo.insert(
-                table=AuditLog,
-                user_id=audit_user.id if audit_user else None,
-                actor_ip_hash=actor_hash,
-                action="contact.send",
-                resource="/contact-us",
-                success=success,
-                details={"from": email, "subject": subject},
-            )
+        audit = AuditRepository(self.session)
+        await audit.insert(
+            AuditLog,
+            user_id=req.user_id, 
+            actor_ip_hash=None,
+            action="contact.reply",
+            resource=f"/contact-requests/{request_id}",
+            success=True,
+            details={"admin_id": str(admin_user.id)}
+        )
 
-            if is_token_request and success and token_request and token_request_user:
-                await audit_repo.insert(
-                    table=AuditLog,
-                    user_id=token_request_user.id,
-                    actor_ip_hash=actor_hash,
-                    action="api_token_request.create",
-                    resource="/contact-us",
-                    success=True,
-                    details={
-                        "request_id": str(token_request.id),
-                        "email": email,
-                    },
-                )
-
-            await self.session.commit()
+        await self.session.commit()
+        return req
+    
+    async def get_request(self, request_id: uuid4) -> Optional[ContactRequest]:
+        return await self.session.get(ContactRequest, request_id)

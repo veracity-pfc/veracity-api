@@ -34,3 +34,12 @@ class ApiTokenRequestStatus(str, Enum):
     open = "open"
     approved = "approved"
     rejected = "rejected"
+    
+class ContactCategory(str, Enum):
+    doubt = "doubt"
+    suggestion = "suggestion"
+    complaint = "complaint"
+
+class ContactStatus(str, Enum):
+    open = "open"
+    answered = "answered"
