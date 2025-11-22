@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import calendar
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin, get_current_user, get_db
 from app.core.database import get_session
 from app.domain.enums import ApiTokenRequestStatus, ApiTokenStatus
 from app.domain.user_model import User
+from app.domain.api_token_model import ApiToken
 from app.schemas.api_token import ApiTokenRead, ApiTokenPageOut, ApiTokenListItem
 from app.schemas.api_token_request import (
     ApiTokenRequestRead,
@@ -44,7 +47,43 @@ async def metrics_month(
 ) -> Dict[str, Any]:
     y, m = _validate_year_month(year, month)
     service = AdminDashboardService(session)
-    return await service.get_monthly_metrics(year=y, month=m)
+    
+    metrics = await service.get_monthly_metrics(year=y, month=m)
+    
+    last_day = calendar.monthrange(y, m)[1]
+    end_of_month = datetime(y, m, last_day, 23, 59, 59, tzinfo=timezone.utc)
+    
+    stmt = select(ApiToken).where(ApiToken.created_at <= end_of_month)
+    result = await session.execute(stmt)
+    tokens = result.scalars().all()
+    
+    active_count = 0
+    expired_count = 0
+    revoked_count = 0
+    
+    for t in tokens:
+        if t.revoked_at and t.revoked_at <= end_of_month:
+            revoked_count += 1
+        elif t.expires_at and t.expires_at <= end_of_month:
+            expired_count += 1
+        else:
+            active_count += 1
+
+    metrics["tokens"] = {
+        "bars": {
+            "active": active_count,
+            "expired": expired_count,
+            "revoked": revoked_count,
+        },
+        "totals": {
+            "total": active_count + expired_count + revoked_count,
+            "active": active_count,
+            "expired": expired_count,
+            "revoked": revoked_count
+        }
+    }
+
+    return metrics
 
 
 @router.get("/api/token-requests", response_model=ApiTokenRequestPageOut)
