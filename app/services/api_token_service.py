@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from math import ceil
 from typing import List, Optional, Tuple
 from uuid import UUID
-
+from sqlalchemy.orm import selectinload
 from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -56,6 +56,31 @@ class ApiTokenService:
         token_bytes = value.encode("utf-8")
         decrypted = self._fernet.decrypt(token_bytes)
         return decrypted.decode("utf-8")
+    
+    async def get_token_details(self, token_id: UUID) -> Optional[dict]:
+        stmt = (
+            select(ApiToken)
+            .options(selectinload(ApiToken.user))
+            .where(ApiToken.id == token_id)
+        )
+        result = await self.session.execute(stmt)
+        token = result.scalar_one_or_none()
+        
+        if not token:
+            return None
+
+        return {
+            "id": str(token.id),
+            "created_at": token.created_at,
+            "status": token.status,
+            "token_prefix": token.token_prefix,
+            "expires_at": token.expires_at,
+            "last_used_at": token.last_used_at,
+            "revoked_at": token.revoked_at,
+            "revoked_reason": token.revoked_reason,
+            "user_email": token.user.email if token.user else None,
+            "analysis_type": "token",
+        }
 
     async def list_requests(
         self,

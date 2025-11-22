@@ -50,9 +50,10 @@ async def get_profile(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    tz = ZoneInfo("America/Sao_Paulo")
-    now = datetime.now(tz)
-    start_local = datetime(now.year, now.month, now.day, tzinfo=tz)
+    br_tz = timezone(timedelta(hours=-3))
+    now = datetime.now(br_tz)
+    start_local = datetime(now.year, now.month, now.day, tzinfo=br_tz)
+    
     start_utc = start_local.astimezone(timezone.utc)
     end_utc = start_utc + timedelta(days=1)
 
@@ -107,10 +108,22 @@ async def reveal_api_token(
     session: AsyncSession = Depends(get_session),
 ):
     service = ApiTokenService(session)
-    token_value, expires_at = await service.reveal_token_for_user(user_id=user.id)
+    token_obj, token_value = await service.reveal_user_token(user_id=user.id)
+    
+    expires_at = token_obj.expires_at
+    
+    expires_str = None
+    if expires_at:
+        if isinstance(expires_at, str):
+            expires_str = expires_at
+        elif hasattr(expires_at, "isoformat"):
+            expires_str = expires_at.isoformat()
+        else:
+            expires_str = str(expires_at)
+        
     return {
         "token": token_value,
-        "expires_at": expires_at.isoformat() if expires_at else None,
+        "expires_at": expires_str,
     }
 
 

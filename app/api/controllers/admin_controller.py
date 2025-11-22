@@ -149,3 +149,15 @@ async def revoke_token(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return token
+
+@router.get("/api/tokens/{token_id}")
+async def get_token_detail(
+    token_id: UUID,
+    _: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    svc = ApiTokenService(session)
+    token_data = await svc.get_token_details(token_id)
+    if not token_data:
+        raise HTTPException(status_code=404, detail="Token não encontrado.")
+    return token_data
