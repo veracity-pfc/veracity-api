@@ -14,7 +14,7 @@ from app.core.constants import EMAIL_RE
 from app.domain.api_token_model import ApiToken
 from app.domain.api_token_request_model import ApiTokenRequest
 from app.domain.audit_model import AuditLog
-from app.domain.enums import ApiTokenStatus
+from app.domain.enums import ApiTokenStatus, ApiTokenRequestStatus
 from app.domain.user_model import User
 from app.repositories.audit_repository import AuditRepository
 from app.schemas.contact import ALLOWED_SUBJECTS
@@ -99,6 +99,14 @@ class ContactService:
             if (result_token.scalar_one() or 0) > 0:
                 raise ValueError("Você já possui um token de API ativo.")
 
+            stmt_has_open_req = select(func.count(ApiTokenRequest.id)).where(
+                ApiTokenRequest.user_id == token_request_user.id,
+                ApiTokenRequest.status == ApiTokenRequestStatus.open,
+            )
+            result_open_req = await self.session.execute(stmt_has_open_req)
+            if (result_open_req.scalar_one() or 0) > 0:
+                raise ValueError("Você já possui uma solicitação de token em análise.")
+
             token_request_created_at = datetime.now(timezone.utc)
             token_request_id = uuid4()
             created_fmt = token_request_created_at.strftime("%d/%m/%Y %H:%M:%S")
@@ -136,7 +144,7 @@ class ContactService:
                     user_id=token_request_user.id,
                     email=email,
                     message=message,
-                    status="open",
+                    status=ApiTokenRequestStatus.open,
                     created_at=token_request_created_at,
                 )
                 self.session.add(token_request)
