@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import calendar
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
 from uuid import UUID
 
-from sqlalchemy import func, select, cast, String, literal, union_all, desc
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select, cast, String, literal, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin, get_current_user, get_db
@@ -16,7 +16,6 @@ from app.domain.user_model import User
 from app.domain.api_token_model import ApiToken
 from app.domain.api_token_request_model import ApiTokenRequest
 from app.domain.contact_request_model import ContactRequest
-
 from app.schemas.api_token import ApiTokenRead, ApiTokenPageOut, ApiTokenListItem
 from app.schemas.api_token_request import (
     ApiTokenRequestRead,
@@ -25,15 +24,15 @@ from app.schemas.api_token_request import (
     RejectBody,
 )
 from app.schemas.contact import (
-    UnifiedRequestDetail,
+    ContactRequestPageOut, 
+    ContactRequestRead, 
     ContactRequestReplyBody,
-    UnifiedRequestPageOut 
+    UnifiedRequestPageOut,
+    UnifiedRequestDetail
 )
 from app.services.admin_service import AdminDashboardService
 from app.services.api_token_service import ApiTokenService
 from app.services.contact_service import ContactService
-from math import ceil
-
 
 router = APIRouter(prefix="/administration", tags=["admin"])
 
@@ -61,8 +60,9 @@ async def metrics_month(
     
     metrics = await service.get_monthly_metrics(year=y, month=m)
     
+    start_of_month = datetime(y, m, 1, 0, 0, 0, tzinfo=timezone.utc)
     last_day = calendar.monthrange(y, m)[1]
-    end_of_month = datetime(y, m, last_day, 23, 59, 59, tzinfo=timezone.utc)
+    end_of_month = datetime(y, m, last_day, 23, 59, 59, 999999, tzinfo=timezone.utc)
     
     stmt = select(ApiToken).where(ApiToken.created_at <= end_of_month)
     result = await session.execute(stmt)
@@ -94,72 +94,37 @@ async def metrics_month(
         }
     }
 
-    return metrics
-
-@router.get("/api/token-requests", response_model=ApiTokenRequestPageOut)
-async def list_token_requests(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(10, ge=1, le=100),
-    status: Optional[ApiTokenRequestStatus] = Query(None),
-    date_from: Optional[datetime] = Query(None),
-    date_to: Optional[datetime] = Query(None),
-    email: Optional[str] = Query(None),
-    _: User = Depends(get_current_user), 
-    session: AsyncSession = Depends(get_db),
-):
-    if date_from and date_to and date_to < date_from:
-        raise HTTPException(status_code=400, detail="Data final inválida.")
-
-    svc = ApiTokenService(session)
-    total, total_pages, rows = await svc.list_requests(
-        page=page, page_size=page_size, status=status,
-        date_from=date_from, date_to=date_to, email=email
+    stmt_contacts = (
+        select(ContactRequest.category, func.count(ContactRequest.id))
+        .where(ContactRequest.created_at >= start_of_month, ContactRequest.created_at <= end_of_month)
+        .group_by(ContactRequest.category)
     )
-    items = [
-        ApiTokenRequestListItem(
-            id=row.id, email=row.email, message_preview=row.message[:120],
-            status=row.status, created_at=row.created_at
-        ) for row in rows
-    ]
-    return ApiTokenRequestPageOut(items=items, page=page, page_size=page_size, total=total, total_pages=total_pages)
+    res_contacts = await session.execute(stmt_contacts)
+    contact_counts = {row[0]: row[1] for row in res_contacts.all()}
 
+    stmt_tokens_req = (
+        select(func.count(ApiTokenRequest.id))
+        .where(ApiTokenRequest.created_at >= start_of_month, ApiTokenRequest.created_at <= end_of_month)
+    )
+    token_req_count = (await session.execute(stmt_tokens_req)).scalar() or 0
 
-@router.get("/api/token-requests/{request_id}", response_model=ApiTokenRequestRead)
-async def get_token_request(
-    request_id: UUID, _: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)
-):
-    svc = ApiTokenService(session)
-    req = await svc.get_request(request_id)
-    if not req:
-        raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
-    return req
+    doubt_count = contact_counts.get(ContactCategory.doubt, 0)
+    suggestion_count = contact_counts.get(ContactCategory.suggestion, 0)
+    complaint_count = contact_counts.get(ContactCategory.complaint, 0)
 
+    metrics["requests"] = {
+        "bars": {
+            "doubt": doubt_count,
+            "suggestion": suggestion_count,
+            "token_request": token_req_count,
+            "complaint": complaint_count
+        },
+        "totals": {
+            "total": doubt_count + suggestion_count + token_req_count + complaint_count
+        }
+    }
 
-@router.post("/api/token-requests/{request_id}/approve", response_model=ApiTokenRead)
-async def approve_token_request(
-    request_id: UUID, admin: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)
-):
-    svc = ApiTokenService(session)
-    try:
-        _, token, _ = await svc.approve_request(request_id=request_id, admin_id=admin.id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return token
-
-
-@router.post("/api/token-requests/{request_id}/reject", response_model=ApiTokenRequestRead)
-async def reject_token_request(
-    request_id: UUID, body: RejectBody, admin: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)
-):
-    if not body.reason.strip():
-        raise HTTPException(status_code=400, detail="Motivo obrigatório.")
-    svc = ApiTokenService(session)
-    try:
-        req = await svc.reject_request(request_id=request_id, admin_id=admin.id, reason=body.reason.strip())
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return req
-
+    return metrics
 
 @router.get("/contact-requests", response_model=UnifiedRequestPageOut)
 async def list_unified_requests(
@@ -171,10 +136,9 @@ async def list_unified_requests(
     _: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db)
 ):
-    
     q_contacts = select(
         ContactRequest.id,
-        ContactRequest.seq_id, 
+        ContactRequest.seq_id,
         ContactRequest.email,
         cast(ContactRequest.category, String).label("category"),
         ContactRequest.subject,
@@ -187,7 +151,7 @@ async def list_unified_requests(
 
     q_tokens = select(
         ApiTokenRequest.id,
-        ApiTokenRequest.seq_id, 
+        ApiTokenRequest.seq_id,
         ApiTokenRequest.email,
         literal("token_request").label("category"),
         literal("Solicitação de Token de API").label("subject"),
@@ -208,7 +172,6 @@ async def list_unified_requests(
         q_tokens = q_tokens.where(cast(ApiTokenRequest.status, String) == status)
 
     final_query = None
-    
     if category == "token_request":
         final_query = q_tokens
     elif category in ["doubt", "suggestion", "complaint"]:
@@ -230,7 +193,7 @@ async def list_unified_requests(
     for row in rows:
         items.append({
             "id": row.id,
-            "seq_id": row.seq_id, 
+            "seq_id": row.seq_id,
             "email": row.email,
             "category": row.category,
             "subject": row.subject,
@@ -241,6 +204,7 @@ async def list_unified_requests(
             "replied_at": row.replied_at
         })
 
+    from math import ceil
     total_pages = ceil(total / page_size) if page_size > 0 else 1
 
     return UnifiedRequestPageOut(
@@ -263,7 +227,7 @@ async def get_unified_request_detail(
     if contact_req:
         return UnifiedRequestDetail(
             id=contact_req.id,
-            seq_id=contact_req.seq_id, 
+            seq_id=contact_req.seq_id,
             email=contact_req.email,
             category=contact_req.category.value,
             subject=contact_req.subject,
@@ -306,6 +270,67 @@ async def reply_contact_request(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+@router.get("/api/token-requests", response_model=ApiTokenRequestPageOut)
+async def list_token_requests(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    status: Optional[ApiTokenRequestStatus] = Query(None),
+    date_from: Optional[datetime] = Query(None),
+    date_to: Optional[datetime] = Query(None),
+    email: Optional[str] = Query(None),
+    _: User = Depends(get_current_user), 
+    session: AsyncSession = Depends(get_db),
+):
+    if date_from and date_to and date_to < date_from:
+        raise HTTPException(status_code=400, detail="Data final inválida.")
+
+    svc = ApiTokenService(session)
+    total, total_pages, rows = await svc.list_requests(
+        page=page, page_size=page_size, status=status,
+        date_from=date_from, date_to=date_to, email=email
+    )
+    items = [
+        ApiTokenRequestListItem(
+            id=row.id, email=row.email, message_preview=row.message[:120],
+            status=row.status, created_at=row.created_at
+        ) for row in rows
+    ]
+    return ApiTokenRequestPageOut(items=items, page=page, page_size=page_size, total=total, total_pages=total_pages)
+
+@router.get("/api/token-requests/{request_id}", response_model=ApiTokenRequestRead)
+async def get_token_request(
+    request_id: UUID, _: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)
+):
+    svc = ApiTokenService(session)
+    req = await svc.get_request(request_id)
+    if not req:
+        raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
+    return req
+
+@router.post("/api/token-requests/{request_id}/approve", response_model=ApiTokenRead)
+async def approve_token_request(
+    request_id: UUID, admin: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)
+):
+    svc = ApiTokenService(session)
+    try:
+        _, token, _ = await svc.approve_request(request_id=request_id, admin_id=admin.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return token
+
+@router.post("/api/token-requests/{request_id}/reject", response_model=ApiTokenRequestRead)
+async def reject_token_request(
+    request_id: UUID, body: RejectBody, admin: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)
+):
+    if not body.reason.strip():
+        raise HTTPException(status_code=400, detail="Motivo obrigatório.")
+    svc = ApiTokenService(session)
+    try:
+        req = await svc.reject_request(request_id=request_id, admin_id=admin.id, reason=body.reason.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return req
+
 @router.get("/api/tokens", response_model=ApiTokenPageOut)
 async def list_tokens(
     page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=100),
@@ -329,7 +354,6 @@ async def list_tokens(
         ) for row in rows
     ]
     return ApiTokenPageOut(items=items, page=page, page_size=page_size, total=total, total_pages=total_pages)
-
 
 @router.post("/api/tokens/{token_id}/revoke", response_model=ApiTokenRead)
 async def revoke_token(
