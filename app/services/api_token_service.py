@@ -247,7 +247,7 @@ class ApiTokenService:
 
         audit_repo = AuditRepository(self.session)
         try:
-            html = build_api_token_revoked_email_html(reason or "")
+            html = build_api_token_revoked_email_html(token.expires_at, reason or "")
             await send_email(
                 to=token.user.email,
                 subject="Seu token de API foi revogado",
