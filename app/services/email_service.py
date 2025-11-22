@@ -87,7 +87,7 @@ def build_api_token_request_email_html(
 
 
 def build_api_token_approved_email_html(expires_at) -> str:
-    expires_fmt = expires_at.strftime("%d/%m/%Y")
+    expires_fmt = expires_at.strftime("%d/%m/%Y às %H:%M")
     return f"""
 <!doctype html>
 <html>
@@ -135,7 +135,7 @@ def build_api_token_rejected_email_html(reason: str) -> str:
 
 
 def build_api_token_expired_email_html(expires_at) -> str:
-    expires_fmt = expires_at.strftime("%d/%m/%Y")
+    expires_fmt = expires_at.strftime("%d/%m/%Y às %H:%M")
     return f"""
 <!doctype html>
 <html>
@@ -155,7 +155,7 @@ def build_api_token_expired_email_html(expires_at) -> str:
 
 
 def build_api_token_revoked_email_html(expires_at, reason: str | None) -> str:
-    expires_fmt = expires_at.strftime("%d/%m/%Y")
+    expires_fmt = expires_at.strftime("%d/%m/%Y às %H:%M")
     reason_text = html.escape(reason or "Motivo não informado.")
     return f"""
 <!doctype html>
