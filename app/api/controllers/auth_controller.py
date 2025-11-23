@@ -122,7 +122,7 @@ async def forgot_password(
         )
 
 
-@router.post("/reset-password/token={token}", response_model=OkOut)
+@router.post("/reset-password/{token}", response_model=OkOut)
 async def reset_password(
     token: str,
     data: ResetPasswordIn,

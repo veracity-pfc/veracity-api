@@ -25,7 +25,6 @@ from app.services.email_service import (
 from app.api.deps import ip_hash_from_request
 
 
-
 class AuthService:
     def __init__(self, session):
         self.session = session
@@ -225,7 +224,7 @@ class AuthService:
             actor_ip_hash=ip_hash_from_request(request),
         )
 
-        link = f"{settings.frontend_url}/reset-password?token={reset.id}"
+        link = f"{settings.frontend_url}/reset-password/{reset.id}"
         html = reset_password_email_html(user.name, link)
         await send_email(email, "Redefinir senha", html)
 
