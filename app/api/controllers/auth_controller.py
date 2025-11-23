@@ -110,10 +110,19 @@ async def forgot_password(
         await service.forgot_password(data.email, request)
         return OkOut()
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        msg = str(exc)
+        if "não está vinculado" in msg.lower():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=msg,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=msg,
+        )
 
 
-@router.post("/reset-password/{token}", response_model=OkOut)
+@router.post("/reset-password/token={token}", response_model=OkOut)
 async def reset_password(
     token: str,
     data: ResetPasswordIn,

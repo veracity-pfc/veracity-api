@@ -2,6 +2,8 @@ import re
 
 ALLOWED_MIMES = {"image/png", "image/jpeg"}
 
+CODE_RE = re.compile(r"^\d{6}$")
+
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 PASSWORD_POLICY = re.compile(r"^(?=.{8,30}$)(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*\W).+$")

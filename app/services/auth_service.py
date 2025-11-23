@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -10,8 +11,7 @@ from jose import jwt
 from app.core.config import settings
 from app.domain.audit_model import AuditLog
 from app.domain.enums import UserStatus
-from app.domain.password_reset import PasswordReset
-from app.domain.pending_registration_model import PendingRegistration
+from app.core.constants import EMAIL_RE
 from app.domain.user_model import User
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.password_reset_repository import PasswordResetRepository
@@ -23,6 +23,7 @@ from app.services.email_service import (
     verification_email_html,
 )
 from app.api.deps import ip_hash_from_request
+
 
 
 class AuthService:
@@ -148,12 +149,12 @@ class AuthService:
             status=UserStatus.active,
             accepted_terms_at=pending.accepted_terms_at,
         )
-        
+
         user = await self.user_repo.create(user)
         await self.pending_repo.delete(pending)
 
         await self.session.commit()
-        
+
         await self.audit_repo.link_registration_to_user(
             registration_id=str(pending.id),
             user_id=str(user.id),
@@ -167,7 +168,7 @@ class AuthService:
             resource="/auth/verify-email",
             success=True,
         )
-        
+
         return self._create_token(user)
 
     async def resend_code(self, email: str, request: Request) -> None:
@@ -206,20 +207,28 @@ class AuthService:
         await self.session.commit()
 
     async def forgot_password(self, email: str, request: Request) -> None:
+        email = (email or "").strip().lower()
+        if not EMAIL_RE.match(email) or len(email) > 60:
+            raise ValueError("O e-mail digitado não é válido. Tente novamente.")
+
         user = await self.user_repo.get_by_email(email)
-        if not user or user.status != UserStatus.active:
-            return
+        if not user:
+            raise ValueError("O e-mail informado não está vinculado a nenhuma conta.")
+        if user.status != UserStatus.active:
+            raise ValueError(
+                "A conta vinculada ao e-mail informado está inativa. Reative a conta para poder realizar a troca de senha"
+            )
 
         reset = await self.pwd_repo.create(
             user_id=str(user.id),
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
             actor_ip_hash=ip_hash_from_request(request),
         )
-        
+
         link = f"{settings.frontend_url}/reset-password?token={reset.id}"
         html = reset_password_email_html(user.name, link)
         await send_email(email, "Redefinir senha", html)
-        
+
         await self.audit_repo.insert(
             AuditLog,
             user_id=user.id,
@@ -246,9 +255,9 @@ class AuthService:
 
         user.password_hash = self._hash_password(password)
         await self.user_repo.update(user)
-        
+
         await self.pwd_repo.mark_used(token, datetime.now(timezone.utc))
-        
+
         await self.audit_repo.insert(
             AuditLog,
             user_id=user.id,
