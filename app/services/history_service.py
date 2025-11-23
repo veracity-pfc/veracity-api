@@ -55,11 +55,62 @@ class HistoryService:
     ) -> HistoryPageOut:
         start, end = normalize_date_range(date_from, date_to)
 
+        if not q:
+            total, rows = await self.repo.paginated_for_user(
+                user_id=user_id,
+                page=page,
+                page_size=page_size,
+                q=None,
+                date_from=start,
+                date_to=end,
+                status=status,
+                analysis_type=analysis_type,
+                exclude_errors=True,
+            )
+
+            items: list[HistoryItemOut] = []
+            for r in rows:
+                analysis_id = str(r[0])
+                created_at = r[1]
+                a_type = r[2]
+                label = r[3]
+                status_val = r[4].value if hasattr(r[4], "value") else str(r[4])
+                source_url = r[5]
+
+                source = source_url or "—"
+                if a_type == "image":
+                    img = await self.repo.get_image_analysis_by_analysis_id(analysis_id)
+                    filename = img.meta.get("filename") if img and img.meta else "—"
+                    source = filename
+
+                items.append(
+                    HistoryItemOut(
+                        id=analysis_id,
+                        created_at=created_at,
+                        analysis_type=a_type,
+                        label=label,
+                        status=status_val,
+                        source=source,
+                    )
+                )
+
+            total_pages = ceil(total / page_size) if page_size else 1
+            return HistoryPageOut(
+                items=items,
+                page=page,
+                page_size=page_size,
+                total=total,
+                total_pages=total_pages,
+            )
+
+        q_normalized = q.strip().lower()
+        internal_page_size = 50 if page_size <= 0 else page_size
+
         total, rows = await self.repo.paginated_for_user(
             user_id=user_id,
-            page=page,
-            page_size=page_size,
-            q=q,
+            page=1,
+            page_size=internal_page_size,
+            q=None,
             date_from=start,
             date_to=end,
             status=status,
@@ -67,21 +118,64 @@ class HistoryService:
             exclude_errors=True,
         )
 
-        items: list[HistoryItemOut] = []
-        for r in rows:
+        all_rows = list(rows)
+        total_db_pages = ceil(total / internal_page_size) if internal_page_size else 1
+
+        current_page = 1
+        while current_page < total_db_pages:
+            current_page += 1
+            _, more_rows = await self.repo.paginated_for_user(
+                user_id=user_id,
+                page=current_page,
+                page_size=internal_page_size,
+                q=None,
+                date_from=start,
+                date_to=end,
+                status=status,
+                analysis_type=analysis_type,
+                exclude_errors=True,
+            )
+            all_rows.extend(more_rows)
+
+        filtered_raw = []
+        for r in all_rows:
             analysis_id = str(r[0])
             created_at = r[1]
             a_type = r[2]
             label = r[3]
-            status_val = r[4].value if hasattr(r[4], "value") else str(r[4])
+            status_enum = r[4]
             source_url = r[5]
 
+            status_val = status_enum.value if hasattr(status_enum, "value") else str(status_enum)
             source = source_url or "—"
+            filename = None
+
             if a_type == "image":
                 img = await self.repo.get_image_analysis_by_analysis_id(analysis_id)
-                filename = img.meta.get("filename") if img and img.meta else "—"
-                source = filename
+                if img and img.meta:
+                    filename = img.meta.get("filename")
+                if filename:
+                    source_for_search = filename
+                else:
+                    source_for_search = source
+            else:
+                source_for_search = source
 
+            if source_for_search and q_normalized in source_for_search.lower():
+                filtered_raw.append(
+                    (analysis_id, created_at, a_type, label, status_val, filename, source)
+                )
+
+        total_filtered = len(filtered_raw)
+        total_pages = ceil(total_filtered / page_size) if page_size else 1
+
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        page_slice = filtered_raw[start_index:end_index]
+
+        items: list[HistoryItemOut] = []
+        for analysis_id, created_at, a_type, label, status_val, filename, source in page_slice:
+            display_source = filename or source or "—"
             items.append(
                 HistoryItemOut(
                     id=analysis_id,
@@ -89,16 +183,15 @@ class HistoryService:
                     analysis_type=a_type,
                     label=label,
                     status=status_val,
-                    source=source,
+                    source=display_source,
                 )
             )
 
-        total_pages = ceil(total / page_size) if page_size else 1
         return HistoryPageOut(
             items=items,
             page=page,
             page_size=page_size,
-            total=total,
+            total=total_filtered,
             total_pages=total_pages,
         )
 
