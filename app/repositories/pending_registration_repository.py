@@ -45,6 +45,10 @@ class PendingRegistrationRepository:
         await self.session.flush()
         return pending
 
+    async def delete(self, pending: PendingRegistration) -> None:
+        await self.session.delete(pending)
+        await self.session.flush()
+
     async def delete_by_email(self, email: str) -> None:
         normalized = (email or "").strip().lower()
         await self.session.execute(
@@ -64,6 +68,9 @@ class PendingRegistrationRepository:
             .where(PendingRegistration.id == pending_id)
             .values(attempts=new_attempts)
         )
+    
+    async def increment_attempts(self, pending_id: str, current_attempts: int) -> None:
+        await self.update_attempts(pending_id, current_attempts + 1)
 
     async def update_code(
         self,

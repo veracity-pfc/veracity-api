@@ -1,79 +1,80 @@
 from __future__ import annotations
 
-import re
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from fastapi import Request
 from jose import jwt
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import ip_hash_from_request
 from app.core.config import settings
-from app.core.constants import EMAIL_RE, PASSWORD_POLICY
-from app.core.security import create_access_token, hash_password, verify_password
 from app.domain.audit_model import AuditLog
-from app.domain.enums import UserRole, UserStatus
+from app.domain.enums import UserStatus
+from app.domain.password_reset import PasswordReset
+from app.domain.pending_registration_model import PendingRegistration
 from app.domain.user_model import User
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.password_reset_repository import PasswordResetRepository
 from app.repositories.pending_registration_repository import PendingRegistrationRepository
 from app.repositories.user_repository import UserRepository
 from app.services.email_service import (
-    EmailError,
     reset_password_email_html,
     send_email,
     verification_email_html,
 )
-
-
-def sanitize_text(s: str) -> str:
-    s = (s or "").strip()
-    s = re.sub(r"[\u0000-\u001F<>]", "", s)
-    s = re.sub(r"\s+", " ", s)
-    return s
-
-
-def validate_password_policy(pw: str) -> Optional[str]:
-    return None if PASSWORD_POLICY.match(pw) else "A senha não atende aos requisitos mínimos."
-
-
-def six_digit_code() -> str:
-    from secrets import randbelow
-    return f"{randbelow(1000000):06d}"
+from app.api.deps import ip_hash_from_request
 
 
 class AuthService:
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session):
         self.session = session
         self.user_repo = UserRepository(session)
         self.pending_repo = PendingRegistrationRepository(session)
-        self.password_reset_repo = PasswordResetRepository(session)
+        self.pwd_repo = PasswordResetRepository(session)
         self.audit_repo = AuditRepository(session)
 
-    async def login(self, email: str, password: str, request) -> str:
-        email = (email or "").strip().lower()
+    def _hash_password(self, password: str) -> str:
+        return hashlib.sha256(
+            (password + settings.jwt_secret).encode("utf-8")
+        ).hexdigest()
+
+    def _create_token(self, user: User) -> str:
+        now = datetime.now(timezone.utc)
+        payload = {
+            "sub": str(user.id),
+            "role": user.role.value,
+            "exp": now + timedelta(hours=24),
+            "iat": now,
+        }
+        return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_alg)
+
+    async def login(self, email: str, password: str, request: Request) -> str:
         user = await self.user_repo.get_by_email(email)
-        actor_hash = ip_hash_from_request(request)
+        if not user or user.password_hash != self._hash_password(password):
+            await self.audit_repo.insert(
+                AuditLog,
+                user_id=user.id if user else None,
+                actor_ip_hash=ip_hash_from_request(request),
+                action="auth.login",
+                resource="/auth/login",
+                success=False,
+                details={"email": email, "reason": "credentials_invalid"},
+            )
+            raise ValueError("Credenciais inválidas.")
 
-        ok = False
-        if user and user.status == UserStatus.active:
-            ok = verify_password(password, user.password_hash)
+        if user.status == UserStatus.inactive:
+            raise ValueError("Conta inativa.")
 
+        token = self._create_token(user)
         await self.audit_repo.insert(
-            table=AuditLog,
-            user_id=user.id if user else None,
-            actor_ip_hash=actor_hash,
+            AuditLog,
+            user_id=user.id,
+            actor_ip_hash=ip_hash_from_request(request),
             action="auth.login",
             resource="/auth/login",
-            success=ok,
-            details={"email": email},
+            success=True,
         )
-        await self.session.commit()
-
-        if not ok:
-            raise ValueError("E-mail ou senha inválidos")
-
-        return create_access_token({"sub": str(user.id), "role": user.role.value})
+        return token
 
     async def register(
         self,
@@ -81,30 +82,20 @@ class AuthService:
         email: str,
         password: str,
         accepted_terms: bool,
-        request,
+        request: Request,
     ) -> None:
-        name = sanitize_text(name)[:30]
-        email = sanitize_text(email).lower()[:60]
-
         if not accepted_terms:
-            raise ValueError("É necessário aceitar os Termos de Uso e a Política de Privacidade.")
+            raise ValueError("Termos de uso obrigatórios.")
 
-        if not EMAIL_RE.match(email):
-            raise ValueError("O e-mail digitado não é válido.")
-
-        existing = await self.user_repo.get_by_email(email)
-        if existing:
+        email = email.strip().lower()
+        if await self.user_repo.get_by_email(email):
             raise ValueError("E-mail já cadastrado.")
 
-        pw_err = validate_password_policy(password)
-        if pw_err:
-            raise ValueError(pw_err)
+        await self.pending_repo.delete_by_email(email)
 
-        pwd_hash = hash_password(password)
-        code = six_digit_code()
-        now = datetime.now(timezone.utc)
-        expires = now + timedelta(minutes=10)
-        accepted_at = now
+        code = f"{int(hashlib.sha256((email + str(datetime.now().timestamp())).encode()).hexdigest(), 16) % 1000000:06d}"
+        pwd_hash = self._hash_password(password)
+        expires = datetime.now(timezone.utc) + timedelta(minutes=10)
 
         pending = await self.pending_repo.create(
             name=name,
@@ -112,206 +103,177 @@ class AuthService:
             password_hash=pwd_hash,
             code=code,
             expires_at=expires,
-            accepted_terms_at=accepted_at,
+            accepted_terms_at=datetime.now(timezone.utc),
         )
+        await self.session.commit()
 
         try:
-            await send_email(
-                to=email,
-                subject="Verificação de e-mail - Veracity",
-                html_body=verification_email_html(pending.name, code),
-            )
-        except EmailError:
-            await self.session.rollback()
-            raise ValueError("Não foi possível enviar o e-mail agora.")
+            html = verification_email_html(name, code)
+            await send_email(email, "Confirme seu e-mail", html)
+        except Exception as exc:
+            raise ValueError(f"Falha ao enviar e-mail: {exc}")
 
         await self.audit_repo.insert(
-            table=AuditLog,
+            AuditLog,
+            user_id=None,
             actor_ip_hash=ip_hash_from_request(request),
             action="auth.register",
             resource="/auth/register",
             success=True,
-            details={
-                "email": email,
-                "registration_id": str(pending.id),
-                "accepted_terms": True,
-            },
+            details={"email": email, "registration_id": str(pending.id)},
         )
         await self.session.commit()
 
-    async def verify_email(self, email: str, code: str, request) -> str:
-        email = sanitize_text(email).lower()
+    async def verify_email(self, email: str, code: str, request: Request) -> str:
+        email = (email or "").strip().lower()
         pending = await self.pending_repo.get_by_email(email)
+
         if not pending:
-            raise ValueError("Cadastro não encontrado ou já confirmado.")
-
-        now = datetime.now(timezone.utc)
-        if now > pending.expires_at:
-            await self.pending_repo.delete_by_id(str(pending.id))
+            raise ValueError("Solicitação não encontrada.")
+        if pending.attempts >= 3:
+            await self.pending_repo.delete(pending)
             await self.session.commit()
-            raise ValueError("Código expirado. Inicie o cadastro novamente.")
-
-        if pending.attempts >= 5 or pending.code != code:
-            await self.pending_repo.increment_attempts(str(pending.id), pending.attempts)
+            raise ValueError("Muitas tentativas. Registre-se novamente.")
+        if pending.expires_at < datetime.now(timezone.utc):
+            raise ValueError("Código expirado.")
+        if pending.code != code:
+            await self.pending_repo.increment_attempts(pending.id, pending.attempts)
             await self.session.commit()
-            raise ValueError("O código inserido está inválido.")
+            raise ValueError("Código inválido.")
 
         user = User(
             name=pending.name,
             email=pending.email,
             password_hash=pending.password_hash,
-            role=UserRole.user,
             status=UserStatus.active,
-            accepted_terms_at=pending.accepted_terms_at or now,
+            accepted_terms_at=pending.accepted_terms_at,
         )
-        await self.user_repo.add(user)
-        await self.audit_repo.link_registration_to_user(str(pending.id), str(user.id))
-        await self.pending_repo.delete_by_id(str(pending.id))
+        
+        user = await self.user_repo.create(user)
+        await self.pending_repo.delete(pending)
+
+        await self.session.commit()
+        
+        await self.audit_repo.link_registration_to_user(
+            registration_id=str(pending.id),
+            user_id=str(user.id),
+        )
 
         await self.audit_repo.insert(
-            table=AuditLog,
-            user_id=str(user.id),
+            AuditLog,
+            user_id=user.id,
             actor_ip_hash=ip_hash_from_request(request),
             action="auth.verify_email",
             resource="/auth/verify-email",
             success=True,
-            details={"email": email},
         )
+        
+        return self._create_token(user)
 
-        token = create_access_token({"sub": str(user.id), "role": user.role.value})
-        await self.session.commit()
-        return token
-
-    async def resend_code(self, email: str, request) -> None:
-        email = sanitize_text(email).lower()
+    async def resend_code(self, email: str, request: Request) -> None:
+        email = (email or "").strip().lower()
         pending = await self.pending_repo.get_by_email(email)
         if not pending:
-            raise ValueError("Cadastro não encontrado ou já confirmou.")
+            raise ValueError("Solicitação não encontrada.")
 
         now = datetime.now(timezone.utc)
-        if (now - pending.last_sent_at).total_seconds() < 30:
-            raise ValueError("Aguarde 30 segundos para reenviar o código.")
+        if pending.last_sent_at and (now - pending.last_sent_at).total_seconds() < 60:
+            raise ValueError("Aguarde 1 minuto para reenviar.")
 
-        new_code = six_digit_code()
-        expires_at = now + timedelta(minutes=10)
+        new_code = f"{int(hashlib.sha256((email + str(now.timestamp())).encode()).hexdigest(), 16) % 1000000:06d}"
+        expires = now + timedelta(minutes=10)
 
         await self.pending_repo.update_code(
-            str(pending.id),
+            pending.id,
             code=new_code,
-            expires_at=expires_at,
+            expires_at=expires,
             last_sent_at=now,
         )
+        await self.session.commit()
+
+        html = verification_email_html(pending.name, new_code)
+        await send_email(email, "Confirme seu e-mail", html)
 
         await self.audit_repo.insert(
-            table=AuditLog,
+            AuditLog,
             user_id=None,
             actor_ip_hash=ip_hash_from_request(request),
             action="auth.resend_code",
             resource="/auth/resend-code",
             success=True,
-            details={"email": email},
+            details={"email": email, "registration_id": str(pending.id)},
         )
         await self.session.commit()
 
-        try:
-            await send_email(
-                to=email,
-                subject="Verificação de e-mail - Veracity",
-                html_body=verification_email_html(pending.name, new_code),
-            )
-        except EmailError:
-            raise ValueError("Falha ao reenviar e-mail.")
-
-    async def forgot_password(self, email: str, request) -> None:
-        email = (email or "").strip().lower()
+    async def forgot_password(self, email: str, request: Request) -> None:
         user = await self.user_repo.get_by_email(email)
-        if not user:
-            raise ValueError("E-mail não encontrado.")
+        if not user or user.status != UserStatus.active:
+            return
 
-        now = datetime.now(timezone.utc)
-        token = await self.password_reset_repo.create(
+        reset = await self.pwd_repo.create(
             user_id=str(user.id),
-            expires_at=now + timedelta(minutes=30),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
             actor_ip_hash=ip_hash_from_request(request),
         )
-
-        base = getattr(settings, "frontend_url", None)
-        link = f"{base}/reset-password/{token.id}"
-
-        try:
-            await send_email(
-                to=user.email,
-                subject="Redefinir sua senha - Veracity",
-                html_body=reset_password_email_html(user.name, link),
-            )
-        except EmailError:
-            await self.session.rollback()
-            raise ValueError("Não foi possível enviar o e-mail agora.")
-
+        
+        link = f"{settings.frontend_url}/reset-password?token={reset.id}"
+        html = reset_password_email_html(user.name, link)
+        await send_email(email, "Redefinir senha", html)
+        
         await self.audit_repo.insert(
-            table=AuditLog,
+            AuditLog,
             user_id=user.id,
             actor_ip_hash=ip_hash_from_request(request),
             action="auth.forgot_password",
             resource="/auth/forgot-password",
             success=True,
-            details={"email": email},
         )
         await self.session.commit()
 
     async def reset_password(
-        self, token_id: str, password: str, confirm_password: str, request
+        self, token: str, password: str, confirm: str, request: Request
     ) -> None:
-        if password != confirm_password:
-            raise ValueError("A senha deve ser igual nos dois campos.")
+        if password != confirm:
+            raise ValueError("Senhas não conferem.")
 
-        err = validate_password_policy(password)
-        if err:
-            raise ValueError(err)
-
-        token = await self.password_reset_repo.get_by_id(token_id)
-        now = datetime.now(timezone.utc)
-
-        if not token or token.used_at is not None or token.expires_at < now:
+        reset = await self.pwd_repo.get_by_id(token)
+        if not reset or reset.used_at or reset.expires_at < datetime.now(timezone.utc):
             raise ValueError("Link inválido ou expirado.")
 
-        user = await self.user_repo.get_by_id(str(token.user_id))
+        user = await self.user_repo.get_by_id(reset.user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
 
-        if verify_password(password, user.password_hash):
-            raise ValueError("A nova senha deve ser diferente da senha atual.")
-
-        user.password_hash = hash_password(password)
-        await self.password_reset_repo.mark_used(str(token.id), now)
-
+        user.password_hash = self._hash_password(password)
+        await self.user_repo.update(user)
+        
+        await self.pwd_repo.mark_used(token, datetime.now(timezone.utc))
+        
         await self.audit_repo.insert(
-            table=AuditLog,
+            AuditLog,
             user_id=user.id,
             actor_ip_hash=ip_hash_from_request(request),
             action="auth.reset_password",
-            resource=f"/auth/reset-password/{token_id}",
+            resource="/auth/reset-password",
             success=True,
         )
         await self.session.commit()
 
-    async def logout(self, request) -> None:
-        auth = (request.headers.get("authorization") or "").strip()
+    async def logout(self, request: Request) -> None:
         user_id = None
-        if auth.lower().startswith("bearer "):
-            try:
-                token = auth.split(" ", 1)[1].strip()
-                payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_alg])
-                user_id = payload.get("sub")
-            except Exception:
-                pass
+        try:
+            if hasattr(request.state, "user_id"):
+                user_id = request.state.user_id
+        except Exception:
+            pass
 
-        await self.audit_repo.insert(
-            table=AuditLog,
-            user_id=user_id,
-            actor_ip_hash=ip_hash_from_request(request),
-            action="auth.logout",
-            resource="/auth/logout",
-            success=True,
-        )
-        await self.session.commit()
+        if user_id:
+            await self.audit_repo.insert(
+                AuditLog,
+                user_id=user_id,
+                actor_ip_hash=ip_hash_from_request(request),
+                action="auth.logout",
+                resource="/auth/logout",
+                success=True,
+            )
+            await self.session.commit()

@@ -85,7 +85,7 @@ class ImageAnalysisService:
 
     async def _sightengine_check(self, img_bytes: bytes, filename: str) -> Dict[str, Any]:
         models = (
-            "properties,type,quality,"
+            "properties,type,quality,deepfake"
             "faces,scam,text-content,face-attributes,text,genai"
         )
         data = {

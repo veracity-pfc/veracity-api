@@ -22,6 +22,11 @@ class UserRepository:
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
+    async def create(self, user: User) -> User:
+        self.session.add(user)
+        await self.session.flush()
+        return user
+
     async def reactivate(self, user: User) -> User:
         user.status = UserStatus.active
         self.session.add(user)
