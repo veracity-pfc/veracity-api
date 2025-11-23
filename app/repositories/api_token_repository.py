@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional, Tuple, List
+from typing import List, Optional, Tuple
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.api_token_model import ApiToken
@@ -18,15 +18,12 @@ class ApiTokenRepository:
         self.session = session
 
     async def user_has_active_token(self, user_id: UUID) -> bool:
-        stmt = (
-            select(func.count(ApiToken.id))
-            .where(
-                ApiToken.user_id == user_id,
-                ApiToken.status == ApiTokenStatus.active,
-            )
+        stmt = select(func.count(ApiToken.id)).where(
+            ApiToken.user_id == user_id,
+            ApiToken.status == ApiTokenStatus.active,
         )
         res = await self.session.execute(stmt)
-        return res.scalar_one() > 0
+        return (res.scalar_one() or 0) > 0
 
     async def create(
         self,
@@ -57,23 +54,8 @@ class ApiTokenRepository:
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
-    async def mark_revealed(self, token: ApiToken, revealed_at: datetime):
-        token.revealed_at = revealed_at
+    async def update(self, token: ApiToken) -> ApiToken:
         self.session.add(token)
-        await self.session.flush()
-
-    async def revoke(
-        self,
-        token: ApiToken,
-        *,
-        reason: Optional[str],
-        admin_id: UUID | None,
-        now: datetime,
-    ) -> ApiToken:
-        token.status = ApiTokenStatus.revoked
-        token.revoked_at = now
-        token.revoked_reason = reason
-        token.revoked_by_admin_id = admin_id
         await self.session.flush()
         return token
 
@@ -96,8 +78,7 @@ class ApiTokenRepository:
         if date_to:
             conditions.append(ApiToken.created_at < date_to)
         if email:
-            like_email = f"%{email.lower()}%"
-            conditions.append(func.lower(User.email).like(like_email))
+            conditions.append(func.lower(User.email).like(f"%{email.lower()}%"))
 
         count_stmt = (
             select(func.count(ApiToken.id))
@@ -110,8 +91,6 @@ class ApiTokenRepository:
         res_count = await self.session.execute(count_stmt)
         total = res_count.scalar_one() or 0
 
-        from sqlalchemy import case
-
         sort_expr = case(
             (ApiToken.status == ApiTokenStatus.active, 0),
             (ApiToken.status == ApiTokenStatus.expired, 1),
@@ -119,10 +98,7 @@ class ApiTokenRepository:
             else_=3,
         )
 
-        stmt = (
-            select(ApiToken)
-            .join(User, User.id == ApiToken.user_id)
-        )
+        stmt = select(ApiToken).join(User, User.id == ApiToken.user_id)
         if conditions:
             stmt = stmt.where(*conditions)
 
@@ -163,8 +139,9 @@ class ApiTokenRequestRepository:
         if date_to:
             conditions.append(ApiTokenRequest.created_at < date_to)
         if email:
-            like_email = f"%{email.lower()}%"
-            conditions.append(func.lower(ApiTokenRequest.email).like(like_email))
+            conditions.append(
+                func.lower(ApiTokenRequest.email).like(f"%{email.lower()}%")
+            )
 
         count_stmt = select(func.count(ApiTokenRequest.id)).select_from(ApiTokenRequest)
         if conditions:
@@ -172,8 +149,6 @@ class ApiTokenRequestRepository:
 
         res_count = await self.session.execute(count_stmt)
         total = res_count.scalar_one() or 0
-
-        from sqlalchemy import case
 
         sort_expr = case(
             (ApiTokenRequest.status == ApiTokenRequestStatus.open, 0),

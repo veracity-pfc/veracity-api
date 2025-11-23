@@ -15,14 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ip_hash_from_request
 from app.core.config import settings
-from app.core.constants import DNS_TIMEOUT, GENERIC_ANALYSIS_ERROR
+from app.core.constants import DNS_TIMEOUT, GENERIC_ANALYSIS_ERROR, GSB_API_URL
 from app.domain.ai_model import AIResponse
-from app.core.constants import GSB_API_URL
 from app.domain.analysis_model import Analysis
 from app.domain.audit_model import AuditLog
 from app.domain.enums import AnalysisStatus, AnalysisType, RiskLabel
 from app.domain.url_analysis_model import UrlAnalysis
 from app.repositories.audit_repository import AuditRepository
+from app.repositories.analysis_repository import AnalysisRepository
 from app.schemas.url_analysis import has_valid_tld
 from app.services.ai_service import AIService
 from app.services.common import resolve_user_id
@@ -71,58 +71,47 @@ async def gsb_check(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
         },
     }
     t0 = time.perf_counter()
-    
+
     try:
         r = await client.post(
             GSB_API_URL,
             headers={"X-Goog-Api-Key": settings.gsb_api_key},
             json=body,
         )
-    except httpx.HTTPError as exc:
-        logger.error(
-            "gsb.request_error",
-            extra={"error_type": type(exc).__name__},
-        )
+    except httpx.HTTPError:
         raise ValueError(GENERIC_ANALYSIS_ERROR)
 
-    dt = round((time.perf_counter() - t0) * 1000, 1)
-    logger.info("gsb.response", extra={"status": r.status_code, "ms": dt})
+    logger.info(
+        "gsb.response",
+        extra={
+            "status": r.status_code,
+            "ms": round((time.perf_counter() - t0) * 1000, 1),
+        },
+    )
 
     if r.status_code >= 400:
-        logger.error(
-            "gsb.status_error",
-            extra={"status": r.status_code},
-        )
         raise ValueError(GENERIC_ANALYSIS_ERROR)
 
     try:
         data = r.json() or {"matches": []}
     except ValueError:
-        logger.error("gsb.json_error")
         raise ValueError(GENERIC_ANALYSIS_ERROR)
 
-    first_match = (data.get("matches") or [None])[0]
-    logger.info(
-        "gsb.matches",
-        extra={
-            "has_matches": bool(data.get("matches")),
-            "count": len(data.get("matches", [])),
-            "first_match_preview": json.dumps(first_match, ensure_ascii=False)[:240]
-            if first_match
-            else None,
-        },
-    )
     return data
 
 
 class UrlAnalysisService:
     def __init__(self, session: AsyncSession):
         self.session = session
+        self.audit = AuditRepository(session)
+        self.analysis_repo = AnalysisRepository(session)
 
-    async def run_analysis(self, user_id: UUID, url: str, request: Request):
+    async def run_analysis_with_validation(
+        self, user_id: UUID, url: str, request: Request
+    ):
         return await self.analyze(
             url_in=url,
-            request=request, 
+            request=request,
             user_id=str(user_id),
         )
 
@@ -133,12 +122,8 @@ class UrlAnalysisService:
         request: Optional[Request] = None,
         user_id: Optional[str],
     ):
-        if request:
-            actor_hash = ip_hash_from_request(request)
-            resolved_user_id = resolve_user_id(request, user_id)
-        else:
-            actor_hash = None
-            resolved_user_id = user_id
+        actor_hash = ip_hash_from_request(request) if request else None
+        resolved_user_id = resolve_user_id(request, user_id) if request else user_id
 
         used_today, limit, scope = await check_daily_limit(
             self.session,
@@ -158,9 +143,7 @@ class UrlAnalysisService:
         self.session.add(analysis)
         await self.session.flush()
 
-        audit_repo = AuditRepository(self.session)
-
-        await audit_repo.insert(
+        await self.audit.insert(
             table=AuditLog,
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
@@ -181,16 +164,6 @@ class UrlAnalysisService:
 
         timeout = httpx.Timeout(settings.http_timeout)
         try:
-            logger.info(
-                "analysis.url.start",
-                extra={
-                    "url": url_in,
-                    "analysis_id": str(analysis.id),
-                    "tld_ok": tld_ok,
-                    "dns_ok": dns_ok_flag,
-                },
-            )
-
             async with httpx.AsyncClient(timeout=timeout) as client:
                 gsb_res = await gsb_check(url_in, client)
                 ai_service = AIService(client)
@@ -201,62 +174,20 @@ class UrlAnalysisService:
                     gsb_json=gsb_res or {},
                 )
 
-        except ValueError as exc:
-            analysis.status = AnalysisStatus.error
-
-            await audit_repo.insert(
-                table=AuditLog,
-                user_id=resolved_user_id,
-                actor_ip_hash=actor_hash,
-                action="analysis.url.error",
-                resource=str(analysis.id),
-                success=False,
-                details={
-                    "source_url": url_in,
-                    "reason": "external_service_error",
-                },
-            )
-            await self.session.commit()
-
-            logger.exception(
-                "analysis.url.failed",
-                extra={
-                    "analysis_id": str(analysis.id),
-                    "error_type": type(exc).__name__,
-                    "url": url_in,
-                },
-            )
-
-            raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
-
         except Exception as exc:
             analysis.status = AnalysisStatus.error
-
-            await audit_repo.insert(
+            await self.audit.insert(
                 table=AuditLog,
                 user_id=resolved_user_id,
                 actor_ip_hash=actor_hash,
                 action="analysis.url.error",
                 resource=str(analysis.id),
                 success=False,
-                details={
-                    "source_url": url_in,
-                    "reason": "unexpected_error",
-                },
+                details={"source_url": url_in, "reason": "service_error"},
             )
             await self.session.commit()
-
-            logger.exception(
-                "analysis.url.unexpected_error",
-                extra={
-                    "analysis_id": str(analysis.id),
-                    "error_type": type(exc).__name__,
-                    "url": url_in,
-                },
-            )
-
+            logger.exception("analysis.url.error")
             raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
-
 
         label_enum = map_pt_label_to_enum(ai_json.get("classification", ""))
 
@@ -286,21 +217,15 @@ class UrlAnalysisService:
         analysis.label = label_enum
         analysis.completed_at = datetime.now(timezone.utc)
 
-        await audit_repo.insert(
+        await self.audit.insert(
             table=AuditLog,
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
             action="analysis.url.finish",
             resource=str(analysis.id),
             success=True,
-            details={
-                "label": label_enum.value,
-                "tld_ok": tld_ok,
-                "dns_ok": dns_ok_flag,
-                "gsb_has_match": bool(gsb_res and gsb_res.get("matches")),
-            },
+            details={"label": label_enum.value},
         )
-
         await self.session.commit()
 
         used_after = used_today + 1
@@ -314,8 +239,4 @@ class UrlAnalysisService:
             "remaining_today": remaining,
         }
 
-        logger.info(
-            "analysis.url.done",
-            extra={"analysis_id": str(analysis.id), "label": analysis.label.value},
-        )
         return analysis, url_row, ai_json_out

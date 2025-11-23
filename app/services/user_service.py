@@ -7,7 +7,6 @@ import re
 import time
 from typing import Any, Tuple
 
-from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -28,10 +27,7 @@ class UserService:
     async def _normalize_and_validate_email(self, raw: str) -> str:
         email = (raw or "").strip().lower()
         if not email or len(email) > 255 or not EMAIL_RE.match(email):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="O e-mail informado não é válido. Tente novamente.",
-            )
+            raise ValueError("O e-mail informado não é válido.")
         return email
 
     def _is_active_user(self, user: Any) -> bool:
@@ -46,15 +42,9 @@ class UserService:
         email = await self._normalize_and_validate_email(raw_email)
         user = await self.users.get_by_email(email)
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="O e-mail fornecido não foi encontrado. Verifique e tente novamente.",
-            )
+            raise ValueError("O e-mail fornecido não foi encontrado.")
         if self._is_active_user(user):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="A conta vinculada ao e-mail fornecido já está ativa.",
-            )
+            raise ValueError("A conta vinculada ao e-mail fornecido já está ativa.")
         return email, str(user.id)
 
     def _time_step(self) -> int:
@@ -84,13 +74,14 @@ class UserService:
         return False
 
     async def send_reactivation_code(self, raw_email: str) -> str:
-        email, _ = await self.validate_email(raw_email)
+        try:
+            email, _ = await self.validate_email(raw_email)
+        except ValueError:
+            raise ValueError("O e-mail fornecido não foi encontrado ou já está ativo.")
+
         user = await self.users.get_by_email(email)
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="O e-mail fornecido não foi encontrado. Verifique e tente novamente.",
-            )
+             raise ValueError("O e-mail fornecido não foi encontrado.")
 
         code = self.generate_reactivation_code(email)
         body = reactivate_account_email_html(html.escape(user.name or ""), code)
@@ -98,19 +89,17 @@ class UserService:
         return email
 
     async def confirm_reactivation_code(self, raw_email: str, code: str) -> str:
-        email, _ = await self.validate_email(raw_email)
+        try:
+            email, _ = await self.validate_email(raw_email)
+        except ValueError:
+             raise ValueError("E-mail inválido ou conta já ativa.")
+
         if not self.validate_reactivation_code_value(email, code):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="O código inserido está inválido ou expirado. Tente novamente.",
-            )
+            raise ValueError("O código inserido está inválido ou expirado.")
 
         user = await self.users.get_by_email(email)
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="O e-mail fornecido não foi encontrado. Verifique e tente novamente.",
-            )
+            raise ValueError("O e-mail fornecido não foi encontrado.")
 
         if not self._is_active_user(user):
             await self.users.reactivate(user)

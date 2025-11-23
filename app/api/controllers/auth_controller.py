@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from jose import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_session
-from app.domain.enums import UserStatus
 from app.schemas.auth import (
     ForgotPasswordIn,
     LogIn,
@@ -17,9 +16,8 @@ from app.schemas.auth import (
 )
 from app.schemas.common import OkOut
 from app.services.auth_service import AuthService
-from app.repositories.user_repository import UserRepository
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
 
 @router.post("/login", response_model=TokenOut)
@@ -28,17 +26,6 @@ async def login(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
-    repo = UserRepository(session)
-    user = await repo.get_by_email(data.email.strip().lower())
-    if user and user.status == UserStatus.inactive:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "ACCOUNT_INACTIVE",
-                "message": "A conta está desativada.",
-            },
-        )
-
     service = AuthService(session)
     try:
         token = await service.login(data.email, data.password, request)
@@ -50,12 +37,15 @@ async def login(
         role = payload.get("role", "user")
         return TokenOut(access_token=token, role=role)
     except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
     except Exception:
-        raise HTTPException(status_code=500, detail="Falha interna no login")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Falha interna no login",
+        )
 
 
-@router.post("/register", response_model=OkOut)
+@router.post("/register", response_model=OkOut, status_code=status.HTTP_201_CREATED)
 async def register(
     data: RegisterIn,
     request: Request,
@@ -72,7 +62,7 @@ async def register(
         )
         return OkOut()
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.post("/verify-email", response_model=TokenOut)
@@ -92,7 +82,7 @@ async def verify_email(
         role = payload.get("role", "user")
         return TokenOut(access_token=token, role=role)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.post("/resend-code", response_model=OkOut)
@@ -106,7 +96,7 @@ async def resend_code(
         await service.resend_code(data.email, request)
         return OkOut()
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.post("/forgot-password", response_model=OkOut)
@@ -120,7 +110,7 @@ async def forgot_password(
         await service.forgot_password(data.email, request)
         return OkOut()
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.post("/reset-password/{token}", response_model=OkOut)
@@ -140,7 +130,7 @@ async def reset_password(
         )
         return OkOut()
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 @router.post("/logout", response_model=OkOut)

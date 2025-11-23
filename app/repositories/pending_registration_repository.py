@@ -23,21 +23,6 @@ class PendingRegistrationRepository:
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
-    async def delete_by_email(self, email: str) -> None:
-        normalized = (email or "").strip().lower()
-        await self.session.execute(
-            delete(PendingRegistration).where(
-                func.lower(PendingRegistration.email) == normalized
-            )
-        )
-
-    async def delete(self, record: PendingRegistration) -> None:
-        await self.session.delete(record)
-
-    async def add(self, record: PendingRegistration) -> None:
-        self.session.add(record)
-        await self.session.flush()
-
     async def create(
         self,
         *,
@@ -60,16 +45,24 @@ class PendingRegistrationRepository:
         await self.session.flush()
         return pending
 
+    async def delete_by_email(self, email: str) -> None:
+        normalized = (email or "").strip().lower()
+        await self.session.execute(
+            delete(PendingRegistration).where(
+                func.lower(PendingRegistration.email) == normalized
+            )
+        )
+
     async def delete_by_id(self, pending_id: str) -> None:
         await self.session.execute(
             delete(PendingRegistration).where(PendingRegistration.id == pending_id)
         )
 
-    async def increment_attempts(self, pending_id: str, current_attempts: int) -> None:
+    async def update_attempts(self, pending_id: str, new_attempts: int) -> None:
         await self.session.execute(
             update(PendingRegistration)
             .where(PendingRegistration.id == pending_id)
-            .values(attempts=current_attempts + 1)
+            .values(attempts=new_attempts)
         )
 
     async def update_code(

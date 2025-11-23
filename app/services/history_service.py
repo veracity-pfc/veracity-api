@@ -11,7 +11,6 @@ from app.domain.enums import RiskLabel
 from app.repositories.analysis_repository import AnalysisRepository
 from app.schemas.history import HistoryDetailOut, HistoryItemOut, HistoryPageOut
 from app.domain.ai_model import AIResponse
-from app.domain.image_analysis_model import ImageAnalysis
 
 
 def normalize_date_range(
@@ -77,12 +76,11 @@ class HistoryService:
             status_val = r[4].value if hasattr(r[4], "value") else str(r[4])
             source_url = r[5]
 
+            source = source_url or "—"
             if a_type == "image":
-                img = await self.session.get(ImageAnalysis, analysis_id)
-                filename = img.meta.get("filename") if img else "—"
+                img = await self.repo.get_image_analysis_by_analysis_id(analysis_id)
+                filename = img.meta.get("filename") if img and img.meta else "—"
                 source = filename
-            else:
-                source = source_url or "—"
 
             items.append(
                 HistoryItemOut(
@@ -135,15 +133,14 @@ class HistoryService:
 
         ai_resp = None
         if row.ai_response_id:
-            ai_resp = await self.session.get(AIResponse, row.ai_response_id)
+            ai_resp = await self.repo.get_ai_response(row.ai_response_id)
 
         summary, recs, raw = self._parse_ai(ai_resp.content if ai_resp else None)
 
+        source = row.source_url or "—"
         if row.analysis_type == "image":
-            img = await self.session.get(ImageAnalysis, analysis_id)
-            source = img.meta.get("filename") if img else "—"
-        else:
-            source = row.source_url or "—"
+            img = await self.repo.get_image_analysis_by_analysis_id(analysis_id)
+            source = img.meta.get("filename") if img and img.meta else "—"
 
         return HistoryDetailOut(
             id=str(row.id),

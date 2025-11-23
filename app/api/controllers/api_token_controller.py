@@ -1,65 +1,44 @@
 from __future__ import annotations
 
 from typing import List
-from urllib.parse import urlsplit
 
-import filetype
-from fastapi import APIRouter, Depends, Body, UploadFile, File, Security, HTTPException, Request
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    Security,
+    UploadFile,
+    status,
+)
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
-from tld import get_tld
 
 from app.core.database import get_session
-from app.core.constants import ALLOWED_MIMES
 from app.domain.api_token_model import ApiToken
 from app.services.api_token_service import ApiTokenService
-from app.services.url_analysis_service import UrlAnalysisService
 from app.services.image_analysis_service import ImageAnalysisService
+from app.services.url_analysis_service import UrlAnalysisService
 
-
-router = APIRouter(prefix="/api", tags=["Public API"])
+router = APIRouter(prefix="/v1/api", tags=["Public API"])
 
 security = HTTPBearer()
-
-def _validate_url_rules(url: str):
-    if not url or not url.strip():
-        raise HTTPException(status_code=400, detail="A URL não pode estar vazia.")
-
-    if len(url) > 200:
-        raise HTTPException(status_code=400, detail="A URL excede o limite máximo de 200 caracteres.")
-
-    if not (url.lower().startswith("http://") or url.lower().startswith("https://")):
-        raise HTTPException(status_code=400, detail="A URL deve começar com 'http://' ou 'https://'.")
-
-    try:
-        get_tld(url, fix_protocol=True)
-    except Exception:
-        raise HTTPException(status_code=400, detail="A URL não possui um domínio (TLD) válido.")
-
-def _validate_image_rules(content: bytes, count: int):
-    if count > 1:
-        raise HTTPException(status_code=400, detail="Apenas uma imagem é permitida por requisição.")
-
-    if len(content) == 0:
-        raise HTTPException(status_code=400, detail="O arquivo de imagem está vazio.")
-
-    if len(content) > 1_000_000:
-        raise HTTPException(status_code=400, detail="A imagem excede o limite de 1MB.")
-
-    kind = filetype.guess(content)
-    if not kind or kind.mime not in ALLOWED_MIMES:
-        raise HTTPException(
-            status_code=400, 
-            detail="Formato de arquivo inválido. Apenas PNG, JPEG ou JPG são aceitos."
-        )
 
 
 async def get_api_token_header(
     creds: HTTPAuthorizationCredentials = Security(security),
-    session: AsyncSession = Depends(get_session)
+    session: AsyncSession = Depends(get_session),
 ) -> ApiToken:
     svc = ApiTokenService(session)
-    return await svc.validate_token(creds.credentials)
+    try:
+        return await svc.validate_token(creds.credentials)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        )
 
 
 @router.post("/auth")
@@ -68,21 +47,29 @@ async def token_auth(
     session: AsyncSession = Depends(get_session),
 ):
     svc = ApiTokenService(session)
-    t = await svc.validate_token(token)
-    return {"status": "active", "expires_at": t.expires_at}
+    try:
+        t = await svc.validate_token(token)
+        return {"status": "active", "expires_at": t.expires_at}
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
 
 
 @router.post("/url-analysis")
 async def token_url_analysis(
     request: Request,
-    url: str = Body(..., embed=True), 
+    url: str = Body(..., embed=True),
     token_obj: ApiToken = Depends(get_api_token_header),
     session: AsyncSession = Depends(get_session),
 ):
-    _validate_url_rules(url)
-
     analysis_svc = UrlAnalysisService(session)
-    an, url_row, ai_data = await analysis_svc.run_analysis(token_obj.user_id, url, request)
+    try:
+        an, url_row, ai_data = await analysis_svc.run_analysis_with_validation(
+            token_obj.user_id,
+            url,
+            request,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     return [
         {
@@ -104,28 +91,37 @@ async def token_url_analysis(
             "explanation": ai_data.get("explanation"),
             "recommendations": ai_data.get("recommendations"),
             "quota": ai_data.get("quota"),
-        }
+        },
     ]
 
 
 @router.post("/image-analysis")
 async def token_image_analysis(
     request: Request,
-    file: List[UploadFile] = File(...), 
-    token_obj: ApiToken = Depends(get_api_token_header), 
+    file: List[UploadFile] = File(...),
+    token_obj: ApiToken = Depends(get_api_token_header),
     session: AsyncSession = Depends(get_session),
 ):
     if not file:
-        raise HTTPException(status_code=400, detail="Nenhum arquivo enviado.")
-    
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Nenhum arquivo enviado.",
+        )
+
     uploaded_file = file[0]
     file_content = await uploaded_file.read()
-    
-    _validate_image_rules(file_content, len(file))
-    
+
     analysis_svc = ImageAnalysisService(session)
-    an, img_row, ai_data = await analysis_svc.run_analysis(token_obj.user_id, file_content, request)
-    
+    try:
+        an, img_row, ai_data = await analysis_svc.run_analysis_with_validation(
+            token_obj.user_id,
+            file_content,
+            len(file),
+            request,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
     return [
         {
             "analysis_type": an.analysis_type,
@@ -145,5 +141,5 @@ async def token_image_analysis(
             "explanation": ai_data.get("explanation"),
             "recommendations": ai_data.get("recommendations"),
             "quota": ai_data.get("quota"),
-        }
+        },
     ]

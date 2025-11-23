@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from jose import JWTError, jwt
+from jose import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ip_hash_from_request
@@ -39,7 +39,6 @@ def validate_password_policy(pw: str) -> Optional[str]:
 
 def six_digit_code() -> str:
     from secrets import randbelow
-
     return f"{randbelow(1000000):06d}"
 
 
@@ -74,8 +73,7 @@ class AuthService:
         if not ok:
             raise ValueError("E-mail ou senha inválidos")
 
-        token = create_access_token({"sub": str(user.id), "role": user.role.value})
-        return token
+        return create_access_token({"sub": str(user.id), "role": user.role.value})
 
     async def register(
         self,
@@ -89,12 +87,10 @@ class AuthService:
         email = sanitize_text(email).lower()[:60]
 
         if not accepted_terms:
-            raise ValueError(
-                "É necessário aceitar os Termos de Uso e a Política de Privacidade."
-            )
+            raise ValueError("É necessário aceitar os Termos de Uso e a Política de Privacidade.")
 
         if not EMAIL_RE.match(email):
-            raise ValueError("O e-mail digitado não é válido. Tente novamente.")
+            raise ValueError("O e-mail digitado não é válido.")
 
         existing = await self.user_repo.get_by_email(email)
         if existing:
@@ -127,9 +123,7 @@ class AuthService:
             )
         except EmailError:
             await self.session.rollback()
-            raise ValueError(
-                "Não foi possível enviar o e-mail agora. Tente novamente mais tarde."
-            )
+            raise ValueError("Não foi possível enviar o e-mail agora.")
 
         await self.audit_repo.insert(
             table=AuditLog,
@@ -141,7 +135,6 @@ class AuthService:
                 "email": email,
                 "registration_id": str(pending.id),
                 "accepted_terms": True,
-                "accepted_terms_at": accepted_at.isoformat(),
             },
         )
         await self.session.commit()
@@ -161,7 +154,7 @@ class AuthService:
         if pending.attempts >= 5 or pending.code != code:
             await self.pending_repo.increment_attempts(str(pending.id), pending.attempts)
             await self.session.commit()
-            raise ValueError("O código inserido está inválido. Tente novamente")
+            raise ValueError("O código inserido está inválido.")
 
         user = User(
             name=pending.name,
@@ -172,12 +165,7 @@ class AuthService:
             accepted_terms_at=pending.accepted_terms_at or now,
         )
         await self.user_repo.add(user)
-
-        await self.audit_repo.link_registration_to_user(
-            registration_id=str(pending.id),
-            user_id=str(user.id),
-        )
-
+        await self.audit_repo.link_registration_to_user(str(pending.id), str(user.id))
         await self.pending_repo.delete_by_id(str(pending.id))
 
         await self.audit_repo.insert(
@@ -191,17 +179,6 @@ class AuthService:
         )
 
         token = create_access_token({"sub": str(user.id), "role": user.role.value})
-
-        await self.audit_repo.insert(
-            table=AuditLog,
-            user_id=str(user.id),
-            actor_ip_hash=ip_hash_from_request(request),
-            action="auth.auto_login",
-            resource="/auth/verify-email",
-            success=True,
-            details={"email": email},
-        )
-
         await self.session.commit()
         return token
 
@@ -232,7 +209,7 @@ class AuthService:
             action="auth.resend_code",
             resource="/auth/resend-code",
             success=True,
-            details={"email": email, "registration_id": str(pending.id)},
+            details={"email": email},
         )
         await self.session.commit()
 
@@ -243,7 +220,7 @@ class AuthService:
                 html_body=verification_email_html(pending.name, new_code),
             )
         except EmailError:
-            raise ValueError("Falha ao reenviar e-mail. Tente novamente em instantes.")
+            raise ValueError("Falha ao reenviar e-mail.")
 
     async def forgot_password(self, email: str, request) -> None:
         email = (email or "").strip().lower()
@@ -269,9 +246,7 @@ class AuthService:
             )
         except EmailError:
             await self.session.rollback()
-            raise ValueError(
-                "Não foi possível enviar o e-mail agora. Tente novamente mais tarde."
-            )
+            raise ValueError("Não foi possível enviar o e-mail agora.")
 
         await self.audit_repo.insert(
             table=AuditLog,
@@ -280,16 +255,12 @@ class AuthService:
             action="auth.forgot_password",
             resource="/auth/forgot-password",
             success=True,
-            details={"email": email, "token_id": str(token.id)},
+            details={"email": email},
         )
         await self.session.commit()
 
     async def reset_password(
-        self,
-        token_id: str,
-        password: str,
-        confirm_password: str,
-        request,
+        self, token_id: str, password: str, confirm_password: str, request
     ) -> None:
         if password != confirm_password:
             raise ValueError("A senha deve ser igual nos dois campos.")
@@ -325,26 +296,15 @@ class AuthService:
         await self.session.commit()
 
     async def logout(self, request) -> None:
+        auth = (request.headers.get("authorization") or "").strip()
         user_id = None
-        auth = (
-            request.headers.get("authorization")
-            or request.headers.get("Authorization")
-            or ""
-        ).strip()
-        token = None
         if auth.lower().startswith("bearer "):
-            token = auth.split(" ", 1)[1].strip()
-
-        if token:
             try:
-                payload = jwt.decode(
-                    token,
-                    settings.jwt_secret,
-                    algorithms=[settings.jwt_alg],
-                )
+                token = auth.split(" ", 1)[1].strip()
+                payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_alg])
                 user_id = payload.get("sub")
-            except JWTError:
-                user_id = None
+            except Exception:
+                pass
 
         await self.audit_repo.insert(
             table=AuditLog,

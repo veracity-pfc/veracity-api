@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple, Any
 
-from sqlalchemy import (
-    bindparam,
-    cast,
-    func,
-    select,
-    text,
-    Tuple
-)
+from sqlalchemy import bindparam, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.ai_model import AIResponse
 from app.domain.analysis_model import Analysis
 from app.domain.enums import AnalysisType, RiskLabel
+from app.domain.image_analysis_model import ImageAnalysis
 
 
 class AnalysisRepository:
@@ -47,12 +42,11 @@ class AnalysisRepository:
             filters.append(Analysis.analysis_type == analysis_type)
         if status:
             filters.append(Analysis.label == status)
-
         if q:
             filters.append(Analysis.source_url.ilike(f"%{q}%"))
 
-        stmt = select(func.count(Analysis.id)).where(*filters)
-        total = (await self.session.execute(stmt)).scalar_one()
+        stmt_count = select(func.count(Analysis.id)).where(*filters)
+        total = (await self.session.execute(stmt_count)).scalar_one()
 
         stmt = (
             select(
@@ -78,7 +72,7 @@ class AnalysisRepository:
         analysis_id: str,
         user_id: str,
         exclude_errors: bool = False,
-    ):
+    ) -> Optional[Analysis]:
         filters = [Analysis.id == analysis_id, Analysis.user_id == user_id]
 
         if exclude_errors:
@@ -87,14 +81,23 @@ class AnalysisRepository:
         stmt = select(Analysis).where(*filters)
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
+    async def get_image_analysis_by_analysis_id(
+        self, analysis_id: str
+    ) -> Optional[ImageAnalysis]:
+        stmt = select(ImageAnalysis).where(ImageAnalysis.analysis_id == analysis_id)
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def get_ai_response(self, ai_response_id: str) -> Optional[AIResponse]:
+        return await self.session.get(AIResponse, ai_response_id)
+
     async def user_counts(
         self,
         *,
         user_id: str,
         day_start: datetime,
         day_end: datetime,
-    ) -> tuple[dict[AnalysisType, int], dict[AnalysisType, int]]:
-        q_today = await self.session.execute(
+    ) -> Tuple[dict[str, int], dict[str, int]]:
+        stmt_today = (
             select(Analysis.analysis_type, func.count(Analysis.id))
             .where(
                 Analysis.user_id == user_id,
@@ -103,18 +106,22 @@ class AnalysisRepository:
             )
             .group_by(Analysis.analysis_type)
         )
-        today_map = {row[0]: int(row[1]) for row in q_today.all()}
+        today_rows = (await self.session.execute(stmt_today)).all()
+        today_map = {row[0]: int(row[1]) for row in today_rows}
 
-        q_all = await self.session.execute(
+        stmt_all = (
             select(Analysis.analysis_type, func.count(Analysis.id))
             .where(Analysis.user_id == user_id)
             .group_by(Analysis.analysis_type)
         )
-        total_map = {row[0]: int(row[1]) for row in q_all.all()}
+        all_rows = (await self.session.execute(stmt_all)).all()
+        total_map = {row[0]: int(row[1]) for row in all_rows}
 
         return today_map, total_map
 
-    async def monthly_metrics(self, *, year: int, month: int) -> dict[str, dict[str, int]]:
+    async def monthly_metrics(
+        self, *, year: int, month: int
+    ) -> dict[str, dict[str, int]]:
         sql = text(
             """
             WITH month_range AS (
@@ -157,7 +164,7 @@ class AnalysisRepository:
         ).bindparams(bindparam("y", year), bindparam("m", month))
 
         res = await self.session.execute(sql)
-        row = res.first() or [0, 0, 0, 0, 0]
+        row = res.first() or (0, 0, 0, 0, 0)
 
         url_suspicious = int(row[0] or 0)
         url_safe = int(row[1] or 0)

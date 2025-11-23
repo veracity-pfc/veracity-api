@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,7 +19,7 @@ from app.schemas.url_analysis import UrlAnalysisIn, UrlAnalysisOut
 from app.services.image_analysis_service import ImageAnalysisService
 from app.services.url_analysis_service import UrlAnalysisService
 
-router = APIRouter(prefix="/analyses", tags=["analyses"])
+router = APIRouter(prefix="/v1/analyses", tags=["analyses"])
 
 
 @router.post("/url", response_model=UrlAnalysisOut)
@@ -21,12 +29,6 @@ async def analyze_url(
     session: AsyncSession = Depends(get_db),
     user: User | None = Depends(get_optional_user),
 ):
-    if len(payload.url) > 200:
-        raise HTTPException(
-            status_code=400,
-            detail="A URL deve ter no máximo 200 caracteres.",
-        )
-
     svc = UrlAnalysisService(session)
     try:
         analysis, _row, ai_json = await svc.analyze(
@@ -35,7 +37,10 @@ async def analyze_url(
             user_id=str(user.id) if user else None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        )
 
     return {
         "analysis_id": str(analysis.id),
@@ -50,7 +55,7 @@ async def analyze_url(
 @router.post("/image", response_model=ImageAnalysisOut)
 async def analyze_image(
     request: Request,
-    file: UploadFile = File(..., description="Uma imagem PNG ou JPEG até 1MB"),
+    file: UploadFile = File(..., description="Imagem PNG/JPEG até 1MB"),
     session: AsyncSession = Depends(get_db),
     user: User | None = Depends(get_optional_user),
 ):
@@ -63,18 +68,10 @@ async def analyze_image(
             size_bytes=len(raw),
         )
     except ValidationError as exc:
-        msgs: list[str] = []
-        for err in exc.errors():
-            msg = (
-                (err.get("msg") or "")
-                .replace("Value error, ", "")
-                .replace("ValueError, ", "")
-                .strip()
-            )
-            if msg and msg not in msgs:
-                msgs.append(msg)
-        detail = "; ".join(msgs) if msgs else "Parâmetros inválidos."
-        raise HTTPException(status_code=400, detail=detail)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Parâmetros de imagem inválidos.",
+        )
 
     svc = ImageAnalysisService(session)
     try:
@@ -86,7 +83,10 @@ async def analyze_image(
             user_id=str(user.id) if user else None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        )
 
     return {
         "analysis_id": str(analysis.id),

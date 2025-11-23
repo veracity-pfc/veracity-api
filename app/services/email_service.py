@@ -39,7 +39,7 @@ def verification_email_html(name: str, code: str) -> str:
 <html>
   <body style="font-family:Arial,sans-serif;background:#0b1211;padding:24px;color:#eef2f1">
     <div style="max-width:520px;margin:0 auto;background:#0e1b19;border-radius:12px;padding:24px">
-      <h2 style="margin:0 0 8px">Confirme seu e-mail</h2>
+      <h2 style="margin:0 0 8px; color: #ffffff;">Confirme seu e-mail</h2>
       <p style="opacity:.9">Olá, <b>{name}</b>. Confirme seu endereço de e-mail informando o código abaixo na plataforma Veracity.
       </br>Ele expira em <b>10 minutos</b>.</p>
       <div style="letter-spacing:.5rem;font-size:28px;font-weight:700;background:#0f2c27;
@@ -221,9 +221,9 @@ def reset_password_email_html(name: str, link: str) -> str:
   </body>
 </html>
     """.strip()
-    
+
+
 def build_contact_reply_email_html(subject: str, original_message: str, reply: str) -> str:
-    import html
     clean_subject = subject.replace("Nova mensagem recebida - ", "")
     clean_subject = html.escape(clean_subject)
 
@@ -252,7 +252,7 @@ def build_contact_reply_email_html(subject: str, original_message: str, reply: s
             
             <div style="padding: 32px 24px; border-bottom: 1px solid rgba(255,255,255,0.05);">
               <h2 style="margin: 0 0 8px; font-size: 20px; color: #ffffff;">Retorno sobre sua {clean_subject}</h2>
-              <p style="margin: 0; font-size: 14px; opacity: 0.8; line-height: 1.5;">
+              <p style="margin: 0; font-size: 14px; opacity: 0.8; line-height: 1.5; color: #ffffff;">
                 Olá. Analisamos sua mensagem e trouxemos um retorno.
               </p>
             </div>
@@ -269,10 +269,10 @@ def build_contact_reply_email_html(subject: str, original_message: str, reply: s
               </div>
 
               <div style="margin-top: 32px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1);">
-                <p style="margin: 0 0 8px; font-size: 12px; opacity: 0.6;">
+                <p style="margin: 0 0 8px; font-size: 12px; opacity: 0.6; color: #ffffff;">
                   Você escreveu anteriormente:
                 </p>
-                <div style="font-style: italic; opacity: 0.7; font-size: 13px; line-height: 1.5; padding-left: 12px; border-left: 2px solid #333;">
+                <div style="font-style: italic; opacity: 0.7; font-size: 13px; line-height: 1.5; padding-left: 12px; border-left: 2px solid #333; color: #ffffff;">
                   "{display_original}"
                 </div>
               </div>
@@ -280,7 +280,7 @@ def build_contact_reply_email_html(subject: str, original_message: str, reply: s
             </div>
 
             <div style="background-color: #080f0e; padding: 16px 24px; text-align: center;">
-              <p style="margin: 0; font-size: 12px; opacity: 0.5;">
+              <p style="margin: 0; font-size: 12px; opacity: 0.5; color: #ffffff;">
                 Atenciosamente,<br>Equipe Veracity
               </p>
             </div>

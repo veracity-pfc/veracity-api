@@ -14,14 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ip_hash_from_request
 from app.core.config import settings
-from app.core.constants import GENERIC_ANALYSIS_ERROR, ALLOWED_MIMES
+from app.core.constants import GENERIC_ANALYSIS_ERROR, ALLOWED_MIMES, SIGHTENGINE_API_URL
 from app.domain.ai_model import AIResponse
 from app.domain.analysis_model import Analysis
 from app.domain.audit_model import AuditLog
-from app.core.constants import SIGHTENGINE_API_URL
 from app.domain.enums import AnalysisStatus, AnalysisType, RiskLabel
 from app.domain.image_analysis_model import ImageAnalysis
 from app.repositories.audit_repository import AuditRepository
+from app.repositories.analysis_repository import AnalysisRepository
 from app.services.ai_service import AIService
 from app.services.common import resolve_user_id
 from app.services.utils.quota_utils import check_daily_limit
@@ -80,6 +80,8 @@ def _pt_label(label: RiskLabel) -> str:
 class ImageAnalysisService:
     def __init__(self, session: AsyncSession):
         self.session = session
+        self.audit_repo = AuditRepository(session)
+        self.analysis_repo = AnalysisRepository(session)
 
     async def _sightengine_check(self, img_bytes: bytes, filename: str) -> Dict[str, Any]:
         models = (
@@ -176,9 +178,7 @@ class ImageAnalysisService:
         self.session.add(analysis)
         await self.session.flush()
 
-        audit_repo = AuditRepository(self.session)
-
-        await audit_repo.insert(
+        await self.audit_repo.insert(
             table=AuditLog,
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
@@ -215,7 +215,7 @@ class ImageAnalysisService:
             )
         except ValueError as exc:
             analysis.status = AnalysisStatus.error
-            await audit_repo.insert(
+            await self.audit_repo.insert(
                 table=AuditLog,
                 user_id=resolved_user_id,
                 actor_ip_hash=actor_hash,
@@ -237,7 +237,7 @@ class ImageAnalysisService:
             raise ValueError(GENERIC_ANALYSIS_ERROR)
         except Exception as exc:
             analysis.status = AnalysisStatus.error
-            await audit_repo.insert(
+            await self.audit_repo.insert(
                 table=AuditLog,
                 user_id=resolved_user_id,
                 actor_ip_hash=actor_hash,
@@ -258,50 +258,13 @@ class ImageAnalysisService:
             )
             raise ValueError(GENERIC_ANALYSIS_ERROR)
 
-        pct = round(ai_generated * 100, 1)
-        if label_enum == RiskLabel.fake:
-            base_expl = (
-                f"A imagem '{filename}' apresenta fortes indícios de geração por IA "
-                f"(probabilidade {pct}%)."
-            )
-            base_recs = [
-                "Não compartilhe esta imagem.",
-                "Solicite a fonte original se necessário.",
-                "Se for associada ao seu nome, publique um desmentido e guarde evidências.",
-            ]
-        elif label_enum == RiskLabel.suspicious:
-            base_expl = (
-                f"A imagem '{filename}' possui sinais de possível geração por IA "
-                f"(probabilidade {pct}%)."
-            )
-            base_recs = [
-                "Busque a fonte original (reverse image search).",
-                "Evite conclusões sem validação independente.",
-                "Se necessário, solicite verificação a um canal oficial.",
-            ]
+        explanation = (ai_text.get("explanation") or "").strip()
+        recommendations_raw = ai_text.get("recommendations") or []
+        
+        if isinstance(recommendations_raw, list):
+            recommendations = [str(x).strip() for x in recommendations_raw if str(x).strip()]
         else:
-            base_expl = (
-                f"A imagem '{filename}' não apresentou sinais relevantes de geração por IA "
-                f"(probabilidade {pct}%)."
-            )
-            base_recs = [
-                "Respeite a privacidade de pessoas retratadas.",
-                "Verifique se não há dados sensíveis antes de publicar.",
-            ]
-
-        extra_expl = (ai_text.get("explanation") or "").strip()
-        extra_recs_raw = ai_text.get("recommendations") or []
-        if isinstance(extra_recs_raw, list):
-            extra_recs = [str(x).strip() for x in extra_recs_raw if str(x).strip()]
-        else:
-            extra_recs = [str(extra_recs_raw).strip()] if extra_recs_raw else []
-
-        explanation = base_expl
-        if extra_expl:
-            explanation = f"{base_expl}\n\nObservação do modelo: {extra_expl}"
-
-        recs_set = set(base_recs)
-        recommendations = base_recs + [r for r in extra_recs if r not in recs_set]
+            recommendations = [str(recommendations_raw).strip()] if recommendations_raw else []
 
         img_row = ImageAnalysis(
             analysis_id=analysis.id,
@@ -333,7 +296,7 @@ class ImageAnalysisService:
         analysis.label = label_enum
         analysis.completed_at = datetime.now(timezone.utc)
 
-        await audit_repo.insert(
+        await self.audit_repo.insert(
             table=AuditLog,
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,

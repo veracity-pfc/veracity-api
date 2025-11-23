@@ -28,7 +28,7 @@ class ContactRequest(Base):
     user_id = Column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     )
     email = Column(String(60), nullable=False)
     category = Column(

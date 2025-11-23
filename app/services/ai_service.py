@@ -32,29 +32,24 @@ class URLSignals:
     query_len: int
 
 
-def _compute_signals(
-    url: str,
-    *,
-    tld_ok_input: bool,
-    dns_ok: bool,
-) -> URLSignals:
+def _compute_signals(url: str, *, tld_ok_input: bool, dns_ok: bool) -> URLSignals:
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
-    
+
     try:
         res = get_tld(url, as_object=True, fix_protocol=True)
-        tld = res.tld
+        tld = str(res.tld)
         tld_valid = True
     except Exception:
         tld = ""
         tld_valid = False
 
     sub_count = max(0, host.count(".") - 1)
-    
+
     return URLSignals(
         url=url,
         host=host,
-        tld=str(tld),
+        tld=tld,
         tld_in_iana=tld_valid,
         tld_ok_input=tld_ok_input,
         dns_ok=dns_ok,
@@ -88,41 +83,6 @@ def _build_prompt(gsb_json: Dict[str, Any], sig: URLSignals) -> str:
     )
 
 
-async def _hf_chat(
-    client: httpx.AsyncClient,
-    prompt: str,
-    *,
-    temperature: float = 0.18,
-    max_tokens: int = 360,
-) -> Dict[str, Any]:
-    url = f"{settings.hf_base_url}/chat/completions"
-    headers = {"Authorization": f"Bearer {settings.hf_token}"}
-    body = {
-        "model": settings.hf_openai_model,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-    t0 = time.perf_counter()
-    r = await client.post(url, json=body, headers=headers, timeout=settings.http_timeout)
-    logger.info(
-        "hf.response",
-        extra={
-            "status": r.status_code,
-            "ms": round((time.perf_counter() - t0) * 1000, 1),
-        },
-    )
-    r.raise_for_status()
-
-    jr = r.json()
-    txt = jr.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-    s, e = txt.find("{"), txt.rfind("}")
-    content = txt[s : e + 1] if s != -1 and e != -1 else "{}"
-    out = json.loads(content)
-    logger.info("hf.parsed_json", extra={"len": len(content)})
-    return out
-
-
 def _build_image_prompt_full(filename: str, mime: str, se_full: Dict[str, Any]) -> str:
     full_json = json.dumps(se_full or {}, ensure_ascii=False)
     return (
@@ -139,19 +99,53 @@ def _build_image_prompt_full(filename: str, mime: str, se_full: Dict[str, Any]) 
         "IMPORTANTE: a explicação DEVE refletir essa interpretação. Nunca diga que é 'segura' se a leitura indicar 'falsa' ou 'suspeita'.\n\n"
         "Instruções de estilo (obrigatórias):\n"
         "- NÃO reclassifique de forma independente; explique o porquê da leitura acima usando os sinais que aparecem no JSON.\n"
-        "- A PRIMEIRA FRASE deve começar com: 'Foi classificada como <Falsa/Suspeita/Segura> porque...' e citar o(s) motivo(s) do Sightengine "
-        "(ex.: 'o detector apontou geração por IA', 'não há sinais de geração por IA nem conteúdo proibido', etc.).\n"
+        "- A PRIMEIRA FRASE deve começar com: 'Foi classificada como <Falsa/Suspeita/Segura> porque...' e citar o(s) motivo(s) do Sightengine.\n"
         "- NÃO use números, porcentagens ou termos técnicos como 'score', 'probabilidade', 'confiança'.\n"
         "- NÃO descreva o conteúdo visual da foto; fale apenas dos sinais do detector.\n"
         "- Escreva a explicação em 3 a 5 frases, tom calmo e claro.\n"
         "- Se houver rosto(s) no JSON, inclua uma frase curta sobre privacidade/consentimento ao compartilhar.\n"
         "- Se houver texto sensível/ofensivo no JSON, mencione de forma simples.\n"
-        "- Traga 2 a 4 recomendações práticas, curtas, no imperativo (ex.: 'Peça autorização antes de publicar').\n"
+        "- Traga 2 a 4 recomendações práticas, curtas, no imperativo.\n"
         "- Português do Brasil.\n\n"
         "Formato de saída (obrigatório): responda ESTRITAMENTE em JSON válido com as chaves:\n"
         '{ "explanation": "texto claro para leigos (3–5 frases)", '
         '"recommendations": ["recomendação 1", "recomendação 2"] }\n'
     )
+
+
+async def _hf_chat(
+    client: httpx.AsyncClient,
+    prompt: str,
+    *,
+    temperature: float = 0.18,
+    max_tokens: int = 360,
+) -> Dict[str, Any]:
+    url = f"{settings.hf_base_url}/chat/completions"
+    headers = {"Authorization": f"Bearer {settings.hf_token}"}
+    body = {
+        "model": settings.hf_openai_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    t0 = time.perf_counter()
+    r = await client.post(
+        url, json=body, headers=headers, timeout=settings.http_timeout
+    )
+    logger.info(
+        "hf.response",
+        extra={
+            "status": r.status_code,
+            "ms": round((time.perf_counter() - t0) * 1000, 1),
+        },
+    )
+    r.raise_for_status()
+
+    jr = r.json()
+    txt = jr.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+    s, e = txt.find("{"), txt.rfind("}")
+    content = txt[s : e + 1] if s != -1 and e != -1 else "{}"
+    return json.loads(content)
 
 
 class AIService:
@@ -174,7 +168,7 @@ class AIService:
         try:
             sig = _compute_signals(url, tld_ok_input=tld_ok, dns_ok=dns_ok)
             prompt = _build_prompt(gsb_json or {}, sig)
-            
+
             try:
                 out = await _hf_chat(
                     client,
@@ -183,23 +177,15 @@ class AIService:
                     max_tokens=360,
                 )
             except Exception as exc:
-                logger.exception(
-                    "hf.chat.url.error",
-                    extra={
-                        "error_type": type(exc).__name__,
-                        "error_message": str(exc),
-                    },
-                )
+                logger.exception("hf.chat.url.error")
                 raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
 
             if not isinstance(out, dict) or not all(
                 k in out for k in ("classification", "explanation", "recommendations")
             ):
-                logger.error("hf.chat.url.invalid_payload")
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
 
-            explanation = " ".join(str(out.get("explanation", "")).split())
-            out["explanation"] = explanation
+            out["explanation"] = " ".join(str(out.get("explanation", "")).split())
             return out
         finally:
             if close_client:
@@ -227,30 +213,21 @@ class AIService:
                     max_tokens=480,
                 )
             except Exception as exc:
-                logger.exception(
-                    "hf.chat.image.error",
-                    extra={
-                        "error_type": type(exc).__name__,
-                        "error_message": str(exc),
-                    },
-                )
+                logger.exception("hf.chat.image.error")
                 raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
 
             if not isinstance(out, dict) or not all(
                 k in out for k in ("explanation", "recommendations")
             ):
-                logger.error(
-                    "hf.chat.image.invalid_payload",
-                    extra={"raw": str(out)[:500]},
-                )
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
 
-            explanation = " ".join(str(out.get("explanation", "")).split())
-            out["explanation"] = explanation
+            out["explanation"] = " ".join(str(out.get("explanation", "")).split())
 
             recs = out.get("recommendations") or []
             if isinstance(recs, list):
-                out["recommendations"] = [str(r).strip() for r in recs if str(r).strip()]
+                out["recommendations"] = [
+                    str(r).strip() for r in recs if str(r).strip()
+                ]
             elif recs:
                 out["recommendations"] = [str(recs).strip()]
             else:
