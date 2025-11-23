@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import Request
 from jose import jwt
+from passlib.hash import bcrypt
 
 from app.core.config import settings
 from app.domain.audit_model import AuditLog
@@ -34,9 +34,18 @@ class AuthService:
         self.audit_repo = AuditRepository(session)
 
     def _hash_password(self, password: str) -> str:
-        return hashlib.sha256(
+        return bcrypt.hash(password)
+
+    def _verify_password(self, password: str, stored_hash: str) -> bool:
+        if stored_hash.startswith("$2"):
+            try:
+                return bcrypt.verify(password, stored_hash)
+            except Exception:
+                return False
+        expected = hashlib.sha256(
             (password + settings.jwt_secret).encode("utf-8")
         ).hexdigest()
+        return stored_hash == expected
 
     def _create_token(self, user: User) -> str:
         now = datetime.now(timezone.utc)
@@ -49,8 +58,9 @@ class AuthService:
         return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_alg)
 
     async def login(self, email: str, password: str, request: Request) -> str:
+        email = (email or "").strip().lower()
         user = await self.user_repo.get_by_email(email)
-        if not user or user.password_hash != self._hash_password(password):
+        if not user or not self._verify_password(password, user.password_hash):
             await self.audit_repo.insert(
                 AuditLog,
                 user_id=user.id if user else None,
