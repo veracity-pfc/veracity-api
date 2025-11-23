@@ -251,8 +251,23 @@ class AuthService:
     async def reset_password(
         self, token: str, password: str, confirm: str, request: Request
     ) -> None:
+        password = password or ""
+        confirm = confirm or ""
+
         if password != confirm:
             raise ValueError("Senhas não conferem.")
+
+        if len(password) < 8:
+            raise ValueError("A nova senha deve ter pelo menos 8 caracteres.")
+
+        has_upper = any(c.isupper() for c in password)
+        has_digit = any(c.isdigit() for c in password)
+        has_symbol = any(not c.isalnum() for c in password)
+
+        if not (has_upper and has_digit and has_symbol):
+            raise ValueError(
+                "A senha deve conter pelo menos 1 letra maiúscula, 1 número e 1 símbolo."
+            )
 
         reset = await self.pwd_repo.get_by_id(token)
         if not reset or reset.used_at or reset.expires_at < datetime.now(timezone.utc):
@@ -261,6 +276,9 @@ class AuthService:
         user = await self.user_repo.get_by_id(reset.user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
+
+        if self._verify_password(password, user.password_hash):
+            raise ValueError("A nova senha deve ser diferente da senha atual.")
 
         user.password_hash = self._hash_password(password)
         await self.user_repo.update(user)
