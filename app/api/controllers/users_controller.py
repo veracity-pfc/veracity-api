@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import logging  
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.database import get_session
 from app.domain.user_model import User
-from app.schemas.user import ReactivateAccountPayload, ReactivateConfirmPayload
+from app.schemas.user import ReactivateAccountPayload
 from app.services.api_token_service import ApiTokenService
 from app.services.user_service import UserService
 
-router = APIRouter(prefix="/v1/user", tags=["user"])
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
+router = APIRouter(prefix="/v1/user", tags=["user"])
 
 @router.get("/profile")
 async def get_profile(
@@ -87,14 +90,19 @@ async def validate_name_only(
 
 @router.post("/profile/email-change/request")
 async def request_email_change(
-    payload: dict = Body(...),
+    request: Request,
+    payload: ReactivateAccountPayload,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    validate_only: bool = Query(False),
 ):
-    new_email = (payload.get("email") or "").strip().lower()
+    new_email = (payload.email or "").strip().lower()
     service = UserService(session)
     try:
-        await service.request_email_change(user.id, new_email)
+        if validate_only:
+            await service.validate_email_change(user.id, new_email)
+            return {"ok": True, "requires_verification": True}
+        await service.request_email_change(user.id, new_email, request)
         return {"ok": True, "requires_verification": True}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
@@ -102,18 +110,25 @@ async def request_email_change(
 
 @router.post("/profile/email-change/confirm")
 async def confirm_email_change(
+    request: Request,
     payload: dict = Body(...),
-    user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    code = (payload.get("code") or "").strip()
+        
     email = (payload.get("email") or "").strip().lower()
+    code = (payload.get("code") or "").strip()
+
     service = UserService(session)
     try:
-        new_email = await service.confirm_email_change(user.id, email, code)
+        new_email = await service.confirm_email_change(
+            email, code, request
+        )
         return {"ok": True, "email": new_email}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception as e:
+        logger.exception("Erro inesperado em confirm_email_change")
+        raise e
 
 
 @router.patch("/account")
@@ -166,15 +181,18 @@ async def send_reactivate_code(
 
 @router.post("/reactivate-account/confirm-code")
 async def confirm_reactivate_code(
-    payload: ReactivateConfirmPayload,
     request: Request,
+    payload: dict = Body(...), 
     session: AsyncSession = Depends(get_session),
 ):
+    email = (payload.get("email") or "").strip().lower()
+    code = (payload.get("code") or "").strip()
+    
     service = UserService(session)
     try:
         await service.confirm_reactivation_code_flow(
-            payload.email,
-            payload.code,
+            email,
+            code,
             request,
         )
         return {"detail": "Conta reativada com sucesso."}
