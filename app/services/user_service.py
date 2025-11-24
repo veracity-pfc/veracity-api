@@ -457,7 +457,7 @@ class UserService:
             raise ValueError("Usuário não encontrado.")
         user.status = UserStatus.inactive
         suffix = str(user.id)
-        user.email = f"deleted+{suffix}@deleted.local"
+        user.email = f"deleted+{suffix}@.com"
         user.name = "Conta excluída"
         await self.users.update(user)
         await self._revoke_active_token_for_user_auto(

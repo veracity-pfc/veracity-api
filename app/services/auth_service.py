@@ -60,10 +60,45 @@ class AuthService:
     async def login(self, email: str, password: str, request: Request) -> str:
         email = (email or "").strip().lower()
         user = await self.user_repo.get_by_email(email)
-        if not user or not self._verify_password(password, user.password_hash):
+
+        if not user:
             await self.audit_repo.insert(
                 AuditLog,
-                user_id=user.id if user else None,
+                user_id=None,
+                actor_ip_hash=ip_hash_from_request(request),
+                action="auth.login",
+                resource="/auth/login",
+                success=False,
+                details={"email": email, "reason": "user_not_found"},
+            )
+            raise ValueError("Credenciais inválidas.")
+
+        status_value = getattr(user, "status", None)
+        if isinstance(status_value, UserStatus):
+            is_active = status_value == UserStatus.active
+        elif isinstance(status_value, str):
+            is_active = status_value.lower() == UserStatus.active.value
+        else:
+            is_active = True
+
+        if not is_active:
+            await self.audit_repo.insert(
+                AuditLog,
+                user_id=user.id,
+                actor_ip_hash=ip_hash_from_request(request),
+                action="auth.login",
+                resource="/auth/login",
+                success=False,
+                details={"email": email, "reason": "account_inactive"},
+            )
+            raise ValueError(
+                "A conta vinculada ao e-mail informado está inativa. Reative a conta para poder acessar a plataforma."
+            )
+
+        if not self._verify_password(password, user.password_hash):
+            await self.audit_repo.insert(
+                AuditLog,
+                user_id=user.id,
                 actor_ip_hash=ip_hash_from_request(request),
                 action="auth.login",
                 resource="/auth/login",
@@ -71,9 +106,6 @@ class AuthService:
                 details={"email": email, "reason": "credentials_invalid"},
             )
             raise ValueError("Credenciais inválidas.")
-
-        if user.status == UserStatus.inactive:
-            raise ValueError("Conta inativa.")
 
         token = self._create_token(user)
         await self.audit_repo.insert(
