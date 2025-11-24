@@ -17,7 +17,7 @@ from app.repositories.audit_repository import AuditRepository
 from app.repositories.password_reset_repository import PasswordResetRepository
 from app.repositories.pending_registration_repository import PendingRegistrationRepository
 from app.repositories.user_repository import UserRepository
-from app.services.email_service import (
+from app.services.utils.email_utils import (
     reset_password_email_html,
     send_email,
     verification_email_html,

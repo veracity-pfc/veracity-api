@@ -25,7 +25,7 @@ from app.repositories.api_token_repository import (
     ApiTokenRequestRepository,
 )
 from app.repositories.audit_repository import AuditRepository
-from app.services.email_service import (
+from app.services.utils.email_utils import (
     EmailError,
     build_api_token_approved_email_html,
     build_api_token_rejected_email_html,

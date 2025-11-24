@@ -15,7 +15,7 @@ from app.domain.enums import ContactCategory, ContactStatus
 from app.domain.user_model import User
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.contact_repository import ContactRepository
-from app.services.email_service import (
+from app.services.utils.email_utils import (
     EmailError,
     build_contact_reply_email_html,
     send_email,

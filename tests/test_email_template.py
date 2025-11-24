@@ -1,4 +1,4 @@
-from app.services.email_service import verification_email_html
+from app.services.utils.email_utils import verification_email_html
 
 def test_verification_email_html_success():
     html = verification_email_html("Manu", "123456")

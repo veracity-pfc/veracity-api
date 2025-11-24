@@ -24,7 +24,7 @@ from app.repositories.audit_repository import AuditRepository
 from app.repositories.user_repository import UserRepository
 from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.api_token_repository import ApiTokenRepository
-from app.services.email_service import (
+from app.services.utils.email_utils import (
     send_email,
     reactivate_account_email_html,
     email_change_email_html,
