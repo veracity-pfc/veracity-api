@@ -113,10 +113,11 @@ class AdminDashboardService:
         page: int,
         page_size: int,
     ) -> Dict[str, Any]:
+
         status_enum = None
         if status:
             try:
-                status_enum = status 
+                status_enum = status
             except ValueError:
                 pass
 
@@ -135,6 +136,16 @@ class AdminDashboardService:
             email=email,
         )
 
+        for idx, row in enumerate(rows):
+            if isinstance(row, dict):
+                user_email = row.get("user_email")
+                if user_email and "deleted.local" in user_email:
+                    row["email"] = user_email
+            else:
+                user_email = getattr(row, "user_email", None)
+                if user_email and "deleted.local" in user_email:
+                    setattr(row, "email", user_email)
+
         total_pages = ceil(total / page_size) if page_size > 0 else 1
 
         return {
@@ -146,4 +157,9 @@ class AdminDashboardService:
         }
 
     async def get_unified_request_detail(self, request_id: UUID) -> Optional[Any]:
-        return await self._admin_repo.get_unified_detail(request_id)
+        detail = await self._admin_repo.get_unified_detail(request_id)
+        if detail and isinstance(detail, dict):
+            user_email = detail.get("user_email")
+            if user_email and "deleted.local" in user_email:
+                detail["email"] = user_email
+        return detail

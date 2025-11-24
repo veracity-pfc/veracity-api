@@ -14,12 +14,14 @@ from sqlalchemy import (
     String,
     text,
     union_all,
+    or_,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.api_token_model import ApiToken
 from app.domain.api_token_request_model import ApiTokenRequest
 from app.domain.contact_request_model import ContactRequest
+from app.domain.user_model import User
 
 
 class AdminRepository:
@@ -121,28 +123,36 @@ class AdminRepository:
         email: Optional[str] = None,
     ) -> Tuple[int, List[dict]]:
         
-        q_contacts = select(
-            ContactRequest.id,
-            ContactRequest.seq_id,
-            ContactRequest.email,
-            cast(ContactRequest.category, String).label("category"),
-            ContactRequest.subject,
-            ContactRequest.message,
-            cast(ContactRequest.status, String).label("status"),
-            ContactRequest.created_at,
-            literal("contact").label("type"),
+        q_contacts = (
+            select(
+                ContactRequest.id,
+                ContactRequest.seq_id,
+                ContactRequest.email,
+                cast(ContactRequest.category, String).label("category"),
+                ContactRequest.subject,
+                ContactRequest.message,
+                cast(ContactRequest.status, String).label("status"),
+                ContactRequest.created_at,
+                literal("contact").label("type"),
+                User.email.label("user_email"),
+            )
+            .join(User, ContactRequest.user_id == User.id, isouter=True)
         )
 
-        q_tokens = select(
-            ApiTokenRequest.id,
-            ApiTokenRequest.seq_id, 
-            ApiTokenRequest.email,
-            literal("Solicitação de token de API").label("category"),
-            literal("Solicitação de Token de API").label("subject"),
-            ApiTokenRequest.message,
-            cast(ApiTokenRequest.status, String).label("status"),
-            ApiTokenRequest.created_at,
-            literal("token").label("type"),
+        q_tokens = (
+            select(
+                ApiTokenRequest.id,
+                ApiTokenRequest.seq_id,
+                ApiTokenRequest.email,
+                literal("Solicitação de token de API").label("category"),
+                literal("Solicitação de Token de API").label("subject"),
+                ApiTokenRequest.message,
+                cast(ApiTokenRequest.status, String).label("status"),
+                ApiTokenRequest.created_at,
+                literal("token").label("type"),
+                User.email.label("user_email"),
+            )
+            .join(User, ApiTokenRequest.user_id == User.id, isouter=True)
         )
 
         if status:
@@ -151,8 +161,18 @@ class AdminRepository:
         
         if email:
             term = f"%{email.lower()}%"
-            q_contacts = q_contacts.where(func.lower(ContactRequest.email).like(term))
-            q_tokens = q_tokens.where(func.lower(ApiTokenRequest.email).like(term))
+            q_contacts = q_contacts.where(
+                or_(
+                    func.lower(ContactRequest.email).like(term),
+                    func.lower(User.email).like(term),
+                )
+            )
+            q_tokens = q_tokens.where(
+                or_(
+                    func.lower(ApiTokenRequest.email).like(term),
+                    func.lower(User.email).like(term),
+                )
+            )
 
         if category:
             if category == "Solicitação de token de API":
@@ -188,11 +208,13 @@ class AdminRepository:
     async def get_unified_detail(self, request_id: UUID) -> Optional[dict]:
         contact = await self._session.get(ContactRequest, request_id)
         if contact:
+            user_email = contact.user.email if contact.user else None
             return {
                 "id": contact.id,
                 "seq_id": contact.seq_id,
                 "type": "contact",
                 "email": contact.email,
+                "user_email": user_email,
                 "category": contact.category,
                 "subject": contact.subject,
                 "message": contact.message,
@@ -204,11 +226,13 @@ class AdminRepository:
 
         token_req = await self._session.get(ApiTokenRequest, request_id)
         if token_req:
+            user_email = token_req.user.email if token_req.user else None
             return {
                 "id": token_req.id,
                 "seq_id": token_req.seq_id,
                 "type": "token",
                 "email": token_req.email,
+                "user_email": user_email,
                 "category": "Solicitação de token de API",
                 "subject": "Solicitação de token de API",
                 "message": token_req.message,

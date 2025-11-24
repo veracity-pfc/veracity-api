@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from math import ceil
 from typing import List, Optional, Tuple
 from uuid import UUID
@@ -65,7 +65,7 @@ class ContactService:
                 ContactCategory.complaint: "reclamação",
                 ContactCategory.suggestion: "sugestão",
             }.get(category, "solicitação")
-            
+
             raise ValueError(
                 f"Você já possui uma {cat_name} em aberto. Aguarde a resposta."
             )
@@ -116,18 +116,31 @@ class ContactService:
             raise ValueError("Esta solicitação já foi respondida.")
 
         now = datetime.now(timezone.utc)
-        req.status = ContactStatus.answered
-        req.admin_reply = reply_message
-        req.replied_at = now
-        req.replied_by_admin_id = admin_user.id
 
-        try:
-            html = build_contact_reply_email_html(
-                req.subject, req.message, reply_message
-            )
-            await send_email(req.email, f"Resposta: {req.subject}", html)
-        except EmailError:
-            logger.error(f"Falha ao enviar email de resposta para {req.id}")
+        user_email = ""
+        if req.user is not None and getattr(req.user, "email", None):
+            user_email = req.user.email or ""
+
+        is_deleted_user = "deleted.local" in user_email
+
+        if is_deleted_user:
+            req.status = ContactStatus.answered
+            req.admin_reply = "Solicitação encerrada pois a conta foi excluída da plataforma."
+            req.replied_at = now
+            req.replied_by_admin_id = admin_user.id
+        else:
+            req.status = ContactStatus.answered
+            req.admin_reply = reply_message
+            req.replied_at = now
+            req.replied_by_admin_id = admin_user.id
+
+            try:
+                html = build_contact_reply_email_html(
+                    req.subject, req.message, reply_message
+                )
+                await send_email(req.email, f"Resposta: {req.subject}", html)
+            except EmailError:
+                logger.error(f"Falha ao enviar email de resposta para {req.id}")
 
         await self.audit.insert(
             AuditLog,
