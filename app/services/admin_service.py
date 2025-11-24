@@ -112,6 +112,8 @@ class AdminDashboardService:
         status: Optional[str],
         category: Optional[str],
         email: Optional[str],
+        date_from: Optional[datetime],
+        date_to: Optional[datetime],
         page: int,
         page_size: int,
     ) -> Dict[str, Any]:
@@ -136,6 +138,8 @@ class AdminDashboardService:
             status=status,
             category=category,
             email=email,
+            date_from=date_from,
+            date_to=date_to,
         )
 
         for idx, row in enumerate(rows):

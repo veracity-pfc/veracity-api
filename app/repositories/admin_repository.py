@@ -121,6 +121,8 @@ class AdminRepository:
         status: Optional[str] = None,
         category: Optional[str] = None,
         email: Optional[str] = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
     ) -> Tuple[int, List[dict]]:
         
         q_contacts = (
@@ -180,6 +182,14 @@ class AdminRepository:
             else:
                 q_contacts = q_contacts.where(cast(ContactRequest.category, String) == category)
                 q_tokens = q_tokens.where(literal(False))
+
+        if date_from:
+            q_contacts = q_contacts.where(ContactRequest.created_at >= date_from)
+            q_tokens = q_tokens.where(ApiTokenRequest.created_at >= date_from)
+
+        if date_to:
+            q_contacts = q_contacts.where(ContactRequest.created_at <= date_to)
+            q_tokens = q_tokens.where(ApiTokenRequest.created_at <= date_to)
 
         union_q = union_all(q_contacts, q_tokens)
         

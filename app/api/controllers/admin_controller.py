@@ -49,16 +49,44 @@ async def list_unified_requests(
     status_filter: Optional[str] = Query(None, alias="status"),
     category: Optional[str] = None,
     email: Optional[str] = None,
+    date_from: Optional[datetime] = Query(None),
+    date_to: Optional[datetime] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
     _: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
+    tz = ZoneInfo("America/Sao_Paulo")
+    range_from = None
+    range_to = None
+
+    if date_from:
+        d = date_from
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=tz)
+        local_start = datetime(d.year, d.month, d.day, tzinfo=tz)
+        range_from = local_start.astimezone(timezone.utc)
+
+    if date_to:
+        d = date_to
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=tz)
+        local_end = datetime(d.year, d.month, d.day, 23, 59, 59, 999999, tzinfo=tz)
+        range_to = local_end.astimezone(timezone.utc)
+
+    if range_from and range_to and range_to < range_from:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Data final inválida.",
+        )
+
     service = AdminDashboardService(session)
     return await service.list_unified_requests(
         status=status_filter,
         category=category,
         email=email,
+        date_from=range_from,
+        date_to=range_to,
         page=page,
         page_size=page_size,
     )
