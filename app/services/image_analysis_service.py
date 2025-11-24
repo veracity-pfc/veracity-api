@@ -151,7 +151,7 @@ class ImageAnalysisService:
 
         mime = _detect_mime(file_content)
         ext = mimetypes.guess_extension(mime or "") or ".bin"
-        filename = f"api_upload_{datetime.now().timestamp()}{ext}"
+        filename = f"token_{datetime.now().timestamp()}{ext}"
 
         return await self.analyze(
             upload_bytes=file_content,

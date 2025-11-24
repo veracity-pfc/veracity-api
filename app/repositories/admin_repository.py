@@ -137,7 +137,7 @@ class AdminRepository:
             ApiTokenRequest.id,
             ApiTokenRequest.seq_id, 
             ApiTokenRequest.email,
-            literal("api_token").label("category"),
+            literal("Solicitação de token de API").label("category"),
             literal("Solicitação de Token de API").label("subject"),
             ApiTokenRequest.message,
             cast(ApiTokenRequest.status, String).label("status"),
@@ -155,7 +155,7 @@ class AdminRepository:
             q_tokens = q_tokens.where(func.lower(ApiTokenRequest.email).like(term))
 
         if category:
-            if category == "api_token":
+            if category == "Solicitação de token de API":
                 q_contacts = q_contacts.where(literal(False))
             else:
                 q_contacts = q_contacts.where(cast(ContactRequest.category, String) == category)
