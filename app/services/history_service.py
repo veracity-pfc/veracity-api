@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from math import ceil
-from typing import Optional
+from typing import Optional, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from zoneinfo import ZoneInfo
@@ -45,6 +45,28 @@ class HistoryService:
         self.session = session
         self.repo = AnalysisRepository(session)
 
+    def _extract_token_id(self, r: Any) -> Any:
+        try:
+            val = getattr(r, "api_token_id", None)
+            if val is not None:
+                return val
+        except Exception:
+            pass
+
+        try:
+            if hasattr(r, "_mapping") and "api_token_id" in r._mapping:
+                return r._mapping["api_token_id"]
+        except Exception:
+            pass
+
+        try:
+            if len(r) > 6:
+                return r[6]
+        except Exception:
+            pass
+        
+        return None
+
     async def list_for_user(
         self,
         *,
@@ -56,10 +78,11 @@ class HistoryService:
         date_to: Optional[datetime],
         status: Optional[RiskLabel],
         analysis_type,
+        origin: Optional[str] = None,
     ) -> HistoryPageOut:
         start, end = normalize_date_range(date_from, date_to)
 
-        if not q:
+        if not q and not origin:
             total, rows = await self.repo.paginated_for_user(
                 user_id=user_id,
                 page=page,
@@ -80,16 +103,8 @@ class HistoryService:
                 label = r[3]
                 status_val = r[4].value if hasattr(r[4], "value") else str(r[4])
                 source_url = r[5]
-
-                token_id = None
-                try:
-                    token_id = getattr(r, "api_token_id", None)
-                except Exception:
-                    try:
-                        if len(r) > 6:
-                            token_id = r[6]
-                    except Exception:
-                        token_id = None
+                
+                token_id = self._extract_token_id(r)
                 via_token = bool(token_id)
 
                 source = source_url or "—"
@@ -119,7 +134,7 @@ class HistoryService:
                 total_pages=total_pages,
             )
 
-        q_normalized = q.strip().lower()
+        q_normalized = q.strip().lower() if q else ""
         internal_page_size = 50 if page_size <= 0 else page_size
 
         total, rows = await self.repo.paginated_for_user(
@@ -166,15 +181,7 @@ class HistoryService:
             source = source_url or "—"
             filename = None
 
-            token_id = None
-            try:
-                token_id = getattr(r, "api_token_id", None)
-            except Exception:
-                try:
-                    if len(r) > 6:
-                        token_id = r[6]
-                except Exception:
-                    token_id = None
+            token_id = self._extract_token_id(r)
             via_token = bool(token_id)
 
             if a_type == "image":
@@ -188,7 +195,19 @@ class HistoryService:
             else:
                 source_for_search = source
 
-            if source_for_search and q_normalized in source_for_search.lower():
+            matches_q = True
+            if q_normalized:
+                if not source_for_search or q_normalized not in source_for_search.lower():
+                    matches_q = False
+
+            matches_origin = True
+            if origin:
+                if origin == "token" and not via_token:
+                    matches_origin = False
+                elif origin == "user" and via_token:
+                    matches_origin = False
+
+            if matches_q and matches_origin:
                 filtered_raw.append(
                     (analysis_id, created_at, a_type, label, status_val, filename, source, via_token)
                 )

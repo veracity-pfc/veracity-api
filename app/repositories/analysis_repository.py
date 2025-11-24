@@ -56,6 +56,7 @@ class AnalysisRepository:
                 Analysis.label,
                 Analysis.status,
                 Analysis.source_url,
+                Analysis.api_token_id,  
             )
             .where(*filters)
             .order_by(Analysis.created_at.desc())

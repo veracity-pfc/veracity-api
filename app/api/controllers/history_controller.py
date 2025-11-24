@@ -24,6 +24,7 @@ async def list_history(
     date_to: Optional[datetime] = Query(None),
     status_filter: Optional[RiskLabel] = Query(None, alias="status"),
     analysis_type: Optional[AnalysisType] = Query(None),
+    origin: Optional[str] = Query(None, regex="^(token|user)$"),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
@@ -43,6 +44,7 @@ async def list_history(
         date_to=date_to,
         status=status_filter,
         analysis_type=analysis_type,
+        origin=origin,
     )
 
 
