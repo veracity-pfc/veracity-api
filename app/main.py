@@ -19,7 +19,7 @@ from app.api.controllers import (
     analysis_controller,
     auth_controller,
     contact_controller,
-    users_controller,
+    user_controller,
     history_controller,
     api_token_controller
 )
@@ -117,7 +117,7 @@ async def unhandled_ex_handler(_: Request, __: Exception) -> JSONResponse:
 
 
 app.include_router(auth_controller.router)
-app.include_router(users_controller.router)
+app.include_router(user_controller.router)
 app.include_router(admin_controller.router)
 app.include_router(contact_controller.router)
 app.include_router(analysis_controller.router)
