@@ -7,7 +7,6 @@ from uuid import UUID
 from sqlalchemy import (
     case,
     cast,
-    desc,
     func,
     literal,
     select,
@@ -22,6 +21,7 @@ from app.domain.api_token_model import ApiToken
 from app.domain.api_token_request_model import ApiTokenRequest
 from app.domain.contact_request_model import ContactRequest
 from app.domain.user_model import User
+from app.domain.enums import ContactStatus, ApiTokenRequestStatus
 
 
 class AdminRepository:
@@ -189,8 +189,8 @@ class AdminRepository:
         subq = union_q.subquery()
 
         status_priority = case(
-            (subq.c.status == 'open', 0),
-            else_=1
+            (subq.c.status == "open", 0),
+            else_=1,
         )
 
         final_stmt = (
@@ -208,6 +208,8 @@ class AdminRepository:
     async def get_unified_detail(self, request_id: UUID) -> Optional[dict]:
         contact = await self._session.get(ContactRequest, request_id)
         if contact:
+            status_value = contact.status
+            status_str = status_value.value if hasattr(status_value, "value") else str(status_value)
             user_email = contact.user.email if contact.user else None
             return {
                 "id": contact.id,
@@ -218,7 +220,7 @@ class AdminRepository:
                 "category": contact.category,
                 "subject": contact.subject,
                 "message": contact.message,
-                "status": contact.status,
+                "status": status_str,
                 "created_at": contact.created_at,
                 "admin_reply": contact.admin_reply,
                 "replied_at": contact.replied_at,
@@ -226,6 +228,8 @@ class AdminRepository:
 
         token_req = await self._session.get(ApiTokenRequest, request_id)
         if token_req:
+            status_value = token_req.status
+            status_str = status_value.value if hasattr(status_value, "value") else str(status_value)
             user_email = token_req.user.email if token_req.user else None
             return {
                 "id": token_req.id,
@@ -236,10 +240,52 @@ class AdminRepository:
                 "category": "Solicitação de token de API",
                 "subject": "Solicitação de token de API",
                 "message": token_req.message,
-                "status": token_req.status,
+                "status": status_str,
                 "created_at": token_req.created_at,
                 "admin_reply": token_req.rejection_reason,
                 "replied_at": token_req.decided_at,
             }
 
         return None
+
+    async def close_contact_request_for_deleted_user(
+        self,
+        request_id: UUID,
+        closed_at: datetime,
+    ) -> bool:
+        contact = await self._session.get(ContactRequest, request_id)
+        if not contact:
+            return False
+        user = contact.user
+        email = user.email if user else None
+        if not email or "deleted.local" not in email:
+            return False
+        if contact.status != ContactStatus.open:
+            return False
+        contact.status = ContactStatus.finished
+        contact.admin_reply = "Solicitação encerrada pois a conta do usuário foi excluída."
+        contact.replied_at = closed_at
+        contact.replied_by_admin_id = None
+        await self._session.flush()
+        return True
+
+    async def close_token_request_for_deleted_user(
+        self,
+        request_id: UUID,
+        closed_at: datetime,
+    ) -> bool:
+        token_req = await self._session.get(ApiTokenRequest, request_id)
+        if not token_req:
+            return False
+        user = token_req.user
+        email = user.email if user else None
+        if not email or "deleted.local" not in email:
+            return False
+        if token_req.status != ApiTokenRequestStatus.open:
+            return False
+        token_req.status = ApiTokenRequestStatus.rejected
+        token_req.rejection_reason = "Solicitação encerrada pois a conta do usuário foi excluída."
+        token_req.decided_at = closed_at
+        token_req.decided_by_admin_id = None
+        await self._session.flush()
+        return True

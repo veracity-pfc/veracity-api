@@ -86,6 +86,13 @@ async def reply_contact_request(
     admin: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
+    admin_service = AdminDashboardService(session)
+    closed = await admin_service.close_contact_request_for_deleted_user(request_id)
+    if closed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Solicitação encerrada pois a conta do usuário foi excluída.",
+        )
     svc = ContactService(session)
     try:
         await svc.reply_request(request_id, admin, body.reply_message)
@@ -161,6 +168,13 @@ async def approve_token_request(
     admin: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
+    admin_service = AdminDashboardService(session)
+    closed = await admin_service.close_token_request_for_deleted_user(request_id)
+    if closed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Solicitação encerrada pois a conta do usuário foi excluída.",
+        )
     svc = ApiTokenService(session)
     try:
         _, token, _ = await svc.approve_request(
@@ -186,6 +200,13 @@ async def reject_token_request(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Motivo obrigatório.",
+        )
+    admin_service = AdminDashboardService(session)
+    closed = await admin_service.close_token_request_for_deleted_user(request_id)
+    if closed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Solicitação encerrada pois a conta do usuário foi excluída.",
         )
     svc = ApiTokenService(session)
     try:

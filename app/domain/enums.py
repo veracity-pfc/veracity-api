@@ -43,3 +43,4 @@ class ContactCategory(str, Enum):
 class ContactStatus(str, Enum):
     open = "open"
     answered = "answered"
+    finished = "finished"

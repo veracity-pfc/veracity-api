@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from math import ceil
 from typing import Any, Dict, Optional
 from uuid import UUID
@@ -13,6 +14,7 @@ from app.repositories.contact_repository import ContactRepository
 
 class AdminDashboardService:
     def __init__(self, session: AsyncSession) -> None:
+        self._session = session
         self._analysis_repo = AnalysisRepository(session)
         self._admin_repo = AdminRepository(session)
         self._contact_repo = ContactRepository(session)
@@ -158,8 +160,58 @@ class AdminDashboardService:
 
     async def get_unified_request_detail(self, request_id: UUID) -> Optional[Any]:
         detail = await self._admin_repo.get_unified_detail(request_id)
-        if detail and isinstance(detail, dict):
+        if not detail:
+            return None
+
+        if isinstance(detail, dict):
             user_email = detail.get("user_email")
-            if user_email and "deleted.local" in user_email:
-                detail["email"] = user_email
+            status_value = detail.get("status")
+            req_type = detail.get("type")
+
+            if hasattr(status_value, "value"):
+                status_str = status_value.value
+            else:
+                status_str = str(status_value)
+
+            if user_email and "deleted.local" in user_email and status_str == "open":
+                now = datetime.now(timezone.utc)
+                if req_type == "contact":
+                    closed = await self._admin_repo.close_contact_request_for_deleted_user(
+                        request_id=request_id,
+                        closed_at=now,
+                    )
+                else:
+                    closed = await self._admin_repo.close_token_request_for_deleted_user(
+                        request_id=request_id,
+                        closed_at=now,
+                    )
+                if closed:
+                    await self._session.commit()
+                    detail = await self._admin_repo.get_unified_detail(request_id)
+
+            if isinstance(detail, dict):
+                user_email = detail.get("user_email")
+                if user_email and "deleted.local" in user_email:
+                    detail["email"] = user_email
+
         return detail
+
+    async def close_contact_request_for_deleted_user(self, request_id: UUID) -> bool:
+        now = datetime.now(timezone.utc)
+        closed = await self._admin_repo.close_contact_request_for_deleted_user(
+            request_id=request_id,
+            closed_at=now,
+        )
+        if closed:
+            await self._session.commit()
+        return closed
+
+    async def close_token_request_for_deleted_user(self, request_id: UUID) -> bool:
+        now = datetime.now(timezone.utc)
+        closed = await self._admin_repo.close_token_request_for_deleted_user(
+            request_id=request_id,
+            closed_at=now,
+        )
+        if closed:
+            await self._session.commit()
+        return closed

@@ -15,9 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import ip_hash_from_request
 from app.core.config import settings
 from app.domain.audit_model import AuditLog
-from app.domain.enums import UserStatus, AnalysisType, AnalysisStatus 
+from app.domain.enums import UserStatus, AnalysisType, AnalysisStatus, ContactStatus, ApiTokenRequestStatus
 from app.domain.user_model import User
-from app.domain.analysis_model import Analysis 
+from app.domain.analysis_model import Analysis
+from app.domain.contact_request_model import ContactRequest
+from app.domain.api_token_request_model import ApiTokenRequest
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.user_repository import UserRepository
 from app.repositories.analysis_repository import AnalysisRepository
@@ -46,16 +48,16 @@ class UserService:
     ) -> int:
         stmt = select(func.count(Analysis.id)).where(
             Analysis.user_id == user_id,
-            Analysis.api_token_id.is_(None),  
+            Analysis.api_token_id.is_(None),
             Analysis.analysis_type == analysis_type,
             Analysis.status != AnalysisStatus.error
         )
-        
+
         if start_date:
             stmt = stmt.where(Analysis.created_at >= start_date)
         if end_date:
             stmt = stmt.where(Analysis.created_at < end_date)
-            
+
         result = await self.session.execute(stmt)
         return result.scalar_one() or 0
 
@@ -134,6 +136,121 @@ class UserService:
             },
         }
 
+    def _hash_password(self, password: str) -> str:
+        salt = settings.password_salt.encode("utf-8")
+        return hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            100_000,
+        ).hex()
+
+    def _verify_password(self, password: str, hashed: str) -> bool:
+        salt = settings.password_salt.encode("utf-8")
+        check_hash = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            100_000,
+        ).hex()
+        return hmac.compare_digest(check_hash, hashed)
+
+    def _normalize_email(self, email: str) -> str:
+        email = html.unescape(email or "").strip().lower()
+        if not EMAIL_RE.fullmatch(email):
+            raise ValueError("E-mail inválido.")
+        return email
+
+    def _validate_password(self, password: str) -> None:
+        if len(password) < 8:
+            raise ValueError("Senha deve ter pelo menos 8 caracteres.")
+        if not any(c.islower() for c in password):
+            raise ValueError("Senha deve conter pelo menos uma letra minúscula.")
+        if not any(c.isupper() for c in password):
+            raise ValueError("Senha deve conter pelo menos uma letra maiúscula.")
+        if not any(c.isdigit() for c in password):
+            raise ValueError("Senha deve conter pelo menos um dígito numérico.")
+        special = "!@#$%^&*()-_=+[]{};:,.<>/?"
+        if not any(c in special for c in password):
+            raise ValueError(
+                "Senha deve conter pelo menos um caractere especial: " + special
+            )
+
+    async def _ensure_unique_email(self, email: str) -> None:
+        existing = await self.users.get_by_email(email)
+        if existing:
+            raise ValueError("E-mail já está em uso.")
+
+    async def register_user(self, name: str, email: str, password: str, request: Request) -> User:
+        name = (name or "").strip()
+        if len(name) < 3 or len(name) > 30:
+            raise ValueError("Nome deve ter entre 3 e 30 caracteres.")
+
+        email = self._normalize_email(email)
+        await self._ensure_unique_email(email)
+        self._validate_password(password)
+
+        hashed = self._hash_password(password)
+        user = await self.users.create_user(name=name, email=email, password_hash=hashed)
+
+        await self.audit_repo.insert(
+            AuditLog,
+            user_id=str(user.id),
+            actor_ip_hash=ip_hash_from_request(request),
+            action="user.register",
+            resource="/auth/register",
+            success=True,
+            details={"email": email},
+        )
+        await self.session.commit()
+        return user
+
+    async def authenticate_user(self, email: str, password: str, request: Request) -> User:
+        email = self._normalize_email(email)
+        user = await self.users.get_by_email(email)
+        if not user:
+            raise ValueError("Credenciais inválidas.")
+        if not self._verify_password(password, user.password_hash):
+            raise ValueError("Credenciais inválidas.")
+        if user.status != UserStatus.active:
+            raise ValueError("Conta inativa. Verifique seu e-mail para reativação.")
+
+        await self.audit_repo.insert(
+            AuditLog,
+            user_id=str(user.id),
+            actor_ip_hash=ip_hash_from_request(request),
+            action="user.login",
+            resource="/auth/login",
+            success=True,
+        )
+        await self.session.commit()
+        return user
+
+    async def change_password(
+        self,
+        user_id: str,
+        current_password: str,
+        new_password: str,
+        request: Request,
+    ) -> None:
+        user = await self.users.get_by_id(user_id)
+        if not user:
+            raise ValueError("Usuário não encontrado.")
+        if not self._verify_password(current_password, user.password_hash):
+            raise ValueError("Senha atual incorreta.")
+        self._validate_password(new_password)
+        user.password_hash = self._hash_password(new_password)
+        await self.users.update(user)
+        await self.audit_repo.insert(
+            AuditLog,
+            user_id=str(user.id),
+            actor_ip_hash=ip_hash_from_request(request),
+            action="user.password.change",
+            resource="/v1/user/change-password",
+            success=True,
+        )
+        await self.session.commit()
+
     async def update_name(self, user_id: str, new_name: str) -> str:
         name = (new_name or "").strip()
         if len(name) < 3 or len(name) > 30:
@@ -149,38 +266,204 @@ class UserService:
             AuditLog,
             user_id=str(user.id),
             actor_ip_hash=None,
-            action="user.profile.update_name",
-            resource="/v1/user/profile/name",
+            action="user.name.update",
+            resource="/v1/user/profile",
             success=True,
-            details={"name": name},
         )
         await self.session.commit()
         return user.name
 
-    async def _normalize_and_validate_email(self, raw: str) -> str:
-        email = (raw or "").strip().lower()
-        if not email or len(email) > 255 or not EMAIL_RE.match(email):
-            raise ValueError("O e-mail informado não é válido.")
-        return email
-
-    async def _normalize_and_validate_new_email_for_change(
-        self,
-        user_id: str,
-        raw_email: str,
-    ) -> str:
-        email = await self._normalize_and_validate_email(raw_email)
+    async def update_email(self, user_id: str, new_email: str) -> str:
+        email = self._normalize_email(new_email)
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
-        if user.email and user.email.lower() == email:
-            raise ValueError("O novo e-mail deve ser diferente do atual.")
-        existing = await self.users.get_by_email(email)
-        if existing and str(existing.id) != str(user_id):
-            raise ValueError("O e-mail informado já está vinculado a outra conta.")
+        if user.email == email:
+            return user.email
+        await self._ensure_unique_email(email)
+        user.email = email
+        await self.users.update(user)
+        await self.audit_repo.insert(
+            AuditLog,
+            user_id=str(user.id),
+            actor_ip_hash=None,
+            action="user.email.update",
+            resource="/v1/user/profile",
+            success=True,
+        )
+        await self.session.commit()
+        return user.email
+
+    async def _normalize_and_validate_email(self, raw_email: str) -> str:
+        email = self._normalize_email(raw_email)
         return email
 
-    def _is_active_user(self, user: Any) -> bool:
+    async def _normalize_and_validate_new_email_for_change(self, user_id: str, raw_email: str) -> str:
+        email = self._normalize_email(raw_email)
+        existing = await self.users.get_by_email(email)
+        if existing and str(existing.id) != user_id:
+            raise ValueError("E-mail já está em uso por outra conta.")
+        return email
+
+    def _time_step(self) -> int:
+        return int(time.time() // 300)
+
+    def _build_code_secret(self, email: str, step: int) -> bytes:
+        return f"{email}:{step}".encode("utf-8")
+
+    def _generate_code(self, email: str) -> str:
+        step = self._time_step()
+        secret = settings.jwt_secret.encode("utf-8")
+        msg = self._build_code_secret(email, step)
+        digest = hmac.new(secret, msg, hashlib.sha256).digest()
+        value = int.from_bytes(digest[:4], "big")
+        value = value % 1_000_000
+        return f"{value:06d}"
+
+    def _validate_code(self, email: str, code: str) -> bool:
+        if not CODE_RE.fullmatch(code):
+            return False
+        secret = settings.jwt_secret.encode("utf-8")
+        now_step = self._time_step()
+        for step in (now_step, now_step - 1, now_step + 1):
+            msg = self._build_code_secret(email, step)
+            digest = hmac.new(secret, msg, hashlib.sha256).digest()
+            value = int.from_bytes(digest[:4], "big")
+            value = value % 1_000_000
+            expected = f"{value:06d}"
+            if hmac.compare_digest(expected, code):
+                return True
+        return False
+
+    async def request_reactivation_code(self, raw_email: str, request: Request) -> None:
+        email = await self._normalize_and_validate_email(raw_email)
+        user = await self.users.get_by_email(email)
+        if not user:
+            raise ValueError("E-mail não encontrado.")
+        if user.status == UserStatus.active:
+            raise ValueError("Conta já está ativa.")
+
+        code = self._generate_code(email)
+        html_body = reactivate_account_email_html(code)
+        await send_email(email, "Código de reativação de conta", html_body)
+        await self.audit_repo.insert(
+            AuditLog,
+            user_id=str(user.id),
+            actor_ip_hash=ip_hash_from_request(request),
+            action="user.reactivate.request_code",
+            resource="/user/reactivate-account",
+            success=True,
+            details={"email": email},
+        )
+        await self.session.commit()
+
+    async def confirm_reactivation_code(
+        self,
+        raw_email: str,
+        code: str,
+        request: Request,
+    ) -> None:
+        email = await self._normalize_and_validate_email(raw_email)
+        user = await self.users.get_by_email(email)
+        if not user:
+            raise ValueError("E-mail não encontrado.")
+
+        try:
+            if not self._validate_code(email, code):
+                raise ValueError("Código inválido ou expirado.")
+            user.status = UserStatus.active
+            await self.users.update(user)
+            await self.audit_repo.insert(
+                AuditLog,
+                user_id=user.id,
+                actor_ip_hash=ip_hash_from_request(request),
+                action="user.reactivate.confirm_code",
+                resource="/user/reactivate-account",
+                success=True,
+                details={"email": email, "code": code},
+            )
+            await self.session.commit()
+        except ValueError as exc:
+            await self.audit_repo.insert(
+                AuditLog,
+                user_id=user.id,
+                actor_ip_hash=ip_hash_from_request(request),
+                action="user.reactivate.confirm_code",
+                resource="user",
+                success=False,
+                details={"email": raw_email, "code": code, "error": str(exc)},
+            )
+            await self.session.commit()
+            raise
+
+    def _generate_random_code(self) -> str:
+        value = secrets.randbelow(1_000_000)
+        return f"{value:06d}"
+
+    async def request_email_change(
+        self,
+        user_id: str,
+        raw_email: str,
+        request: Request,
+    ) -> None:
+        email = await self._normalize_and_validate_new_email_for_change(user_id, raw_email)
+        user = await self.users.get_by_id(user_id)
+        if not user:
+            raise ValueError("Usuário não encontrado.")
+        code = self._generate_random_code()
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+        await self.users.set_email_change_code(user.id, email, code, expires_at)
+        html_body = email_change_email_html(code, email)
+        await send_email(email, "Confirmação de alteração de e-mail", html_body)
+        await self.audit_repo.insert(
+            AuditLog,
+            user_id=str(user.id),
+            actor_ip_hash=ip_hash_from_request(request),
+            action="user.email_change.request",
+            resource="/v1/user/profile/email-change/request",
+            success=True,
+            details={"new_email": email},
+        )
+        await self.session.commit()
+
+    async def confirm_email_change(
+        self,
+        user_id: str,
+        code: str,
+        request: Request,
+    ) -> None:
+        user = await self.users.get_by_id(user_id)
+        if not user:
+            raise ValueError("Usuário não encontrado.")
+        if not user.pending_email or not user.pending_email_code or not user.pending_email_expires_at:
+            raise ValueError("Nenhuma alteração de e-mail pendente.")
+        if user.pending_email_expires_at < datetime.now(timezone.utc):
+            raise ValueError("Código expirado.")
+        if user.pending_email_code != code:
+            raise ValueError("Código inválido.")
+
+        new_email = user.pending_email
+        await self._ensure_unique_email(new_email)
+        user.email = new_email
+        user.pending_email = None
+        user.pending_email_code = None
+        user.pending_email_expires_at = None
+        await self.users.update(user)
+        await self.audit_repo.insert(
+            AuditLog,
+            user_id=str(user.id),
+            actor_ip_hash=ip_hash_from_request(request),
+            action="user.email_change.confirm",
+            resource="/v1/user/profile/email-change/confirm",
+            success=True,
+            details={"new_email": new_email},
+        )
+        await self.session.commit()
+
+    def _is_active_user(self, user: User) -> bool:
         status_value = getattr(user, "status", None)
+        if hasattr(status_value, "value"):
+            status_value = status_value.value
         if isinstance(status_value, UserStatus):
             return status_value == UserStatus.active
         if isinstance(status_value, str):
@@ -199,201 +482,25 @@ class UserService:
     async def validate_email_change(self, user_id: str, raw_email: str) -> None:
         await self._normalize_and_validate_new_email_for_change(user_id, raw_email)
 
-    def _time_step(self) -> int:
-        return int(time.time() // 900)
-
-    def _generate_random_code(self) -> str:
-        value = secrets.randbelow(1_000_000)
-        return f"{value:06d}"
-
-    async def request_email_change(
-        self,
-        user_id: str,
-        raw_email: str,
-        request: Request,
-    ) -> None:
-        email = await self._normalize_and_validate_new_email_for_change(user_id, raw_email)
+    async def inactivate_account(self, user_id: str) -> None:
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
-        code = self._generate_random_code()
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
-        await self.users.save_reactivation_code(user, code, expires_at)
-        body = email_change_email_html(user.name or "", email, code)
-        await send_email(email, "Confirmar alteração de e-mail", body)
-        await self.audit_repo.insert(
-            AuditLog,
-            user_id=str(user.id),
-            actor_ip_hash=ip_hash_from_request(request),
-            action="user.email_change.request",
-            resource="/v1/user/profile/email-change/request",
-            success=True,
-            details={"email": email},
-        )
-        await self.session.commit()
-
-    async def confirm_email_change(
-        self,
-        raw_email: str,
-        code: str,
-        request: Request,
-    ) -> str:
-        email = await self._normalize_and_validate_email(raw_email)
-        if not CODE_RE.fullmatch(code or ""):
-            raise ValueError("O código inserido está inválido ou expirado.")
-        result = await self.session.execute(
-            select(User).where(User.reactivation_code == code)
-        )
-        user = result.scalar_one_or_none()
-        if not user:
-            raise ValueError("O código inserido está inválido ou expirado.")
-        now = datetime.now(timezone.utc)
-        if not user.reactivation_code_expires_at or user.reactivation_code_expires_at < now:
-            raise ValueError("O código inserido está inválido ou expirado.")
-        email = await self._normalize_and_validate_new_email_for_change(str(user.id), email)
-        user.email = email
-        await self.users.clear_reactivation_code(user)
+        user.status = UserStatus.inactive
         await self.users.update(user)
+        await self._revoke_active_token_for_user_auto(
+            user_id=str(user.id),
+            reason="Conta inativada pelo usuário",
+        )
         await self.audit_repo.insert(
             AuditLog,
             user_id=str(user.id),
-            actor_ip_hash=ip_hash_from_request(request),
-            action="user.email_change.confirm",
-            resource="/v1/user/profile/email-change/confirm",
+            actor_ip_hash=None,
+            action="user.account.inactivate",
+            resource="/v1/user/account",
             success=True,
-            details={"email": email},
         )
         await self.session.commit()
-        return user.email
-
-    def _generate_for_step(self, email: str, step: int) -> str:
-        key = settings.jwt_secret.encode("utf-8")
-        msg = f"reactivate:{email.lower()}:{step}".encode("utf-8")
-        digest = hmac.new(key, msg, hashlib.sha256).digest()
-        num = int.from_bytes(digest[:4], "big") % 1_000_000
-        return f"{num:06d}"
-
-    def generate_reactivation_code(self, email: str) -> str:
-        step = self._time_step()
-        return self._generate_for_step(email, step)
-
-    def validate_reactivation_code_value(self, email: str, code: str) -> bool:
-        if not CODE_RE.fullmatch(code):
-            return False
-        now_step = self._time_step()
-        for delta in (0, -1):
-            step = now_step + delta
-            if step < 0:
-                continue
-            if self._generate_for_step(email, step) == code:
-                return True
-        return False
-
-    async def validate_reactivation_email(self, raw_email: str, request: Request) -> None:
-        try:
-            email, user_id = await self.validate_email(raw_email)
-            await self.audit_repo.insert(
-                AuditLog,
-                user_id=user_id,
-                actor_ip_hash=ip_hash_from_request(request),
-                action="user.reactivate.validate",
-                resource="user",
-                success=True,
-                details={"email": email},
-            )
-            await self.session.commit()
-        except ValueError as exc:
-            await self.audit_repo.insert(
-                AuditLog,
-                user_id=None,
-                actor_ip_hash=ip_hash_from_request(request),
-                action="user.reactivate.validate",
-                resource="user",
-                success=False,
-                details={"email": raw_email, "error": str(exc)},
-            )
-            await self.session.commit()
-            raise
-
-    async def send_reactivation_code_flow(self, raw_email: str, request: Request) -> None:
-        try:
-            email, user_id = await self.validate_email(raw_email)
-            user = await self.users.get_by_email(email)
-            code = self._generate_random_code()
-            expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
-            await self.users.save_reactivation_code(user, code, expires_at)
-            body = reactivate_account_email_html(html.escape(user.name or ""), code)
-            await send_email(email, "Reativar conta", body)
-            await self.audit_repo.insert(
-                AuditLog,
-                user_id=user_id,
-                actor_ip_hash=ip_hash_from_request(request),
-                action="user.reactivate.send_code",
-                resource="user",
-                success=True,
-                details={"email": email},
-            )
-            await self.session.commit()
-        except ValueError as exc:
-            await self.audit_repo.insert(
-                AuditLog,
-                user_id=None,
-                actor_ip_hash=ip_hash_from_request(request),
-                action="user.reactivate.send_code",
-                resource="user",
-                success=False,
-                details={"email": raw_email, "error": str(exc)},
-            )
-            await self.session.commit()
-            raise
-
-    async def confirm_reactivation_code_flow(
-        self,
-        raw_email: str,
-        code: str,
-        request: Request,
-    ) -> None:
-        user_id: str | None = None
-        try:
-            email, user_id = await self.validate_email(raw_email)
-            if not CODE_RE.fullmatch(code or ""):
-                raise ValueError("O código inserido está inválido ou expirado.")
-            user = await self.users.get_by_email(email)
-            if not user:
-                raise ValueError("Usuário não encontrado.")
-            now = datetime.now(timezone.utc)
-            if (
-                not user.reactivation_code
-                or user.reactivation_code != code
-                or not user.reactivation_code_expires_at
-                or user.reactivation_code_expires_at < now
-            ):
-                raise ValueError("O código inserido está inválido ou expirado.")
-            if not self._is_active_user(user):
-                await self.users.reactivate(user)
-            await self.users.clear_reactivation_code(user)
-            await self.audit_repo.insert(
-                AuditLog,
-                user_id=user_id,
-                actor_ip_hash=ip_hash_from_request(request),
-                action="user.reactivate.confirm_code",
-                resource="/user/reactivate-account",
-                success=True,
-                details={"email": email, "code": code},
-            )
-            await self.session.commit()
-        except ValueError as exc:
-            await self.audit_repo.insert(
-                AuditLog,
-                user_id=user_id,
-                actor_ip_hash=ip_hash_from_request(request),
-                action="user.reactivate.confirm_code",
-                resource="user",
-                success=False,
-                details={"email": raw_email, "code": code, "error": str(exc)},
-            )
-            await self.session.commit()
-            raise
 
     async def _revoke_active_token_for_user_auto(self, user_id: str, reason: str) -> None:
         token = await self.tokens.get_active_by_user(user_id)
@@ -410,6 +517,33 @@ class UserService:
             success=True,
             details={"reason": reason, "token_id": str(token.id)},
         )
+
+    async def _close_requests_for_deleted_user(self, user: User, closed_at: datetime) -> None:
+        message = "Solicitação encerrada pois a conta do usuário foi excluída."
+        result_contacts = await self.session.execute(
+            select(ContactRequest).where(
+                ContactRequest.user_id == user.id,
+                ContactRequest.status == ContactStatus.open,
+            )
+        )
+        contact_requests = result_contacts.scalars().all()
+        for req in contact_requests:
+            req.status = ContactStatus.finished
+            req.admin_reply = message
+            req.replied_at = closed_at
+            req.replied_by_admin_id = None
+        result_tokens = await self.session.execute(
+            select(ApiTokenRequest).where(
+                ApiTokenRequest.user_id == user.id,
+                ApiTokenRequest.status == ApiTokenRequestStatus.open,
+            )
+        )
+        token_requests = result_tokens.scalars().all()
+        for req in token_requests:
+            req.status = ApiTokenRequestStatus.rejected
+            req.rejection_reason = message
+            req.decided_at = closed_at
+            req.decided_by_admin_id = None
 
     async def inactivate_account(self, user_id: str) -> None:
         user = await self.users.get_by_id(user_id)
@@ -435,11 +569,13 @@ class UserService:
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
+        now = datetime.now(timezone.utc)
         user.status = UserStatus.inactive
         suffix = str(user.id)
-        user.email = f"deleted+{suffix}@deleted.local.com"
+        user.email = f"deleted+{suffix}@.deleted.local.com"
         user.name = "Conta excluída"
         await self.users.update(user)
+        await self._close_requests_for_deleted_user(user=user, closed_at=now)
         await self._revoke_active_token_for_user_auto(
             user_id=str(user.id),
             reason="Conta excluída pelo usuário",
