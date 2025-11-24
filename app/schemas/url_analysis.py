@@ -1,40 +1,53 @@
-from typing import List, Optional
-from pydantic import BaseModel, field_validator
-from urllib.parse import urlsplit
-import re
-from app.domain.enums import RiskLabel
-from app.schemas.common import QuotaOut
+from __future__ import annotations
 
-_TLD_RE = re.compile(r"^[A-Za-z]{2,24}$")
+from typing import List, Optional
+from urllib.parse import urlsplit
+
+from pydantic import BaseModel, field_validator
+from pydantic_core import PydanticCustomError
+from tld import get_tld
+
 
 def has_valid_tld(host: str) -> bool:
-    if "." not in host:
+    host = (host or "").lower().strip()
+    if not host or "." not in host:
         return False
-    tld = host.rsplit(".", 1)[-1]
-    return bool(_TLD_RE.match(tld))
+    try:
+        res = get_tld("http://" + host, as_object=True, fix_protocol=True)
+        tld = str(res.tld or "").strip()
+        return bool(tld)
+    except Exception:
+        return False
+
 
 class UrlAnalysisIn(BaseModel):
     url: str
 
     @field_validator("url")
     @classmethod
-    def validate_url(cls, v: str):
-        if len(v) > 200:
-            raise ValueError("A URL deve ter no máximo 200 caracteres.")
-        if not (v.startswith("http://") or v.startswith("https://")):
-            raise ValueError("A URL deve começar com http:// ou https://")
+    def validate_tld(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise PydanticCustomError(
+                "url_missing",
+                "A URL é obrigatória",
+                {"reason": "empty"},
+            )
         parts = urlsplit(v)
-        if not parts.netloc:
-            raise ValueError("A URL não pode estar vazia")
-        host = parts.hostname or ""
+        host = (parts.hostname or "").lower()
         if not has_valid_tld(host):
-            raise ValueError("A URL deve possuir um TLD válido")
+            raise PydanticCustomError(
+                "url_tld",
+                "A URL deve possuir um TLD válido",
+                {"reason": "invalid_tld"},
+            )
         return v
+
 
 class UrlAnalysisOut(BaseModel):
     analysis_id: str
     url: str
-    explanation: str
-    recommendations: List[str]
-    label: RiskLabel
-    quota: Optional[QuotaOut] = None
+    explanation: Optional[str] = None
+    recommendations: List[str] = []
+    label: str
+    quota: Optional[dict] = None

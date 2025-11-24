@@ -30,11 +30,36 @@ class URLSignals:
     is_punycode: bool
     path_len: int
     query_len: int
+    hosting_provider: str
+    is_hosting_provider: bool
+
+
+def _detect_hosting_provider(host: str) -> str:
+    if not host:
+        return ""
+    h = host.lower()
+    providers = {
+        "vercel.app": "vercel",
+        "onrender.com": "render",
+        "render.com": "render",
+        "netlify.app": "netlify",
+        "web.app": "web_app",
+        "firebaseapp.com": "firebase",
+        "github.io": "github_pages",
+        "herokuapp.com": "heroku",
+        "glitch.me": "glitch",
+    }
+    for suffix, name in providers.items():
+        if h.endswith(suffix):
+            return name
+    return ""
 
 
 def _compute_signals(url: str, *, tld_ok_input: bool, dns_ok: bool) -> URLSignals:
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
+
+    hosting_provider = _detect_hosting_provider(host)
 
     try:
         res = get_tld(url, as_object=True, fix_protocol=True)
@@ -59,6 +84,8 @@ def _compute_signals(url: str, *, tld_ok_input: bool, dns_ok: bool) -> URLSignal
         is_punycode=host.startswith("xn--"),
         path_len=len(parts.path or ""),
         query_len=len(parts.query or ""),
+        hosting_provider=hosting_provider,
+        is_hosting_provider=bool(hosting_provider),
     )
 
 
@@ -74,12 +101,16 @@ def _build_prompt(gsb_json: Dict[str, Any], sig: URLSignals) -> str:
         "Instruções:\n"
         "- Avalie se o endereço tenta se passar por outro pela forma do domínio e subdomínios.\n"
         "- Mesmo sem alertas no GSB, considere: TLD desconhecido, punycode, muitos subdomínios, hífens/números e caminho longo.\n"
+        "- Se o campo \"is_hosting_provider\" for verdadeiro, você DEVE classificar como \"Suspeito\", "
+        "explicando que empresas legítimas normalmente usam domínios próprios (como \"empresa.com\" ou "
+        "\"empresa.com.br\") em vez de subdomínios genéricos em provedores como Vercel, Render, Netlify, "
+        "Firebase ou similares.\n"
         "- Explique em UM parágrafo curto, SEM termos técnicos; foque no que o usuário leigo precisa saber e por quê.\n"
         "- Em seguida, traga 2 recomendações práticas e curtas.\n"
         "Responda SOMENTE com JSON válido no formato exato:\n"
         '{ "classification": "Seguro|Suspeito|Malicioso", '
         '"explanation": "um parágrafo claro e simples", '
-        '"recommendations": ["recomendação 1", "recomendação 2"] }\n'
+        '"recommendations": ["recomendação 1", "recomendação 2"] }\n"'
     )
 
 
@@ -109,7 +140,7 @@ def _build_image_prompt_full(filename: str, mime: str, se_full: Dict[str, Any]) 
         "- Português do Brasil.\n\n"
         "Formato de saída (obrigatório): responda ESTRITAMENTE em JSON válido com as chaves:\n"
         '{ "explanation": "texto claro para leigos (3–5 frases)", '
-        '"recommendations": ["recomendação 1", "recomendação 2"] }\n'
+        '"recommendations": ["recomendação 1", "recomendação 2"] }\n"'
     )
 
 
@@ -180,10 +211,58 @@ class AIService:
                 logger.exception("hf.chat.url.error")
                 raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
 
-            if not isinstance(out, dict) or not all(
-                k in out for k in ("classification", "explanation", "recommendations")
-            ):
-                raise ValueError(GENERIC_ANALYSIS_ERROR)
+            if not isinstance(out, dict):
+                out = {}
+
+            classification = str(out.get("classification", "")).strip()
+            explanation = str(out.get("explanation", "")).strip()
+            recs = out.get("recommendations")
+
+            if not classification:
+                classification = "Suspeito" if sig.is_hosting_provider else "Desconhecido"
+
+            if not explanation:
+                if sig.is_hosting_provider:
+                    explanation = (
+                        "Esta URL está hospedada em um provedor genérico de aplicações, e "
+                        "empresas e instituições legítimas normalmente utilizam domínios próprios "
+                        "para seus sites oficiais."
+                    )
+                else:
+                    explanation = (
+                        "Não foi possível interpretar completamente os sinais técnicos desta URL, "
+                        "então é recomendável manter cautela ao acessá-la."
+                    )
+
+            if not isinstance(recs, list):
+                recs = []
+
+            if not recs:
+                recs = [
+                    "Evite informar senhas ou dados pessoais antes de confirmar se o endereço é realmente oficial.",
+                    "Quando estiver em dúvida, digite o endereço do site diretamente no navegador em vez de clicar em links recebidos por mensagens.",
+                ]
+
+            out = {
+                "classification": classification,
+                "explanation": explanation,
+                "recommendations": recs,
+            }
+
+            if sig.is_hosting_provider:
+                current_cls = str(out.get("classification", "")).strip()
+                if not current_cls or current_cls.lower().startswith("segur"):
+                    out["classification"] = "Suspeito"
+                reason = (
+                    "Esta URL está hospedada em um provedor genérico de aplicações, e "
+                    "empresas e instituições legítimas normalmente utilizam domínios próprios "
+                    "para seus sites oficiais."
+                )
+                current_exp = str(out.get("explanation") or "").strip()
+                if current_exp:
+                    out["explanation"] = f"{reason} {current_exp}"
+                else:
+                    out["explanation"] = reason
 
             out["explanation"] = " ".join(str(out.get("explanation", "")).split())
             return out

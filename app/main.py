@@ -104,10 +104,27 @@ async def http_ex_handler(_: Request, exc: StarletteHTTPException) -> JSONRespon
 
 
 @app.exception_handler(RequestValidationError)
-async def validation_ex_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+async def validation_ex_handler(request: Request, exc: RequestValidationError):
+    errors = exc.errors()
+    messages = []
+
+    for e in errors:
+        if isinstance(e, dict):
+            msg = e.get("msg")
+            if msg:
+                messages.append(str(msg))
+
+    if not messages:
+        detail = "Erro de validação"
+    else:
+        detail = " | ".join(messages)
+
     return JSONResponse(
         status_code=422,
-        content={"detail": "Validation error", "errors": exc.errors()},
+        content={
+            "detail": detail,
+            "errors": errors,
+        },
     )
 
 
