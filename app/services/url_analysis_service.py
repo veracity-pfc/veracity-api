@@ -122,6 +122,18 @@ class UrlAnalysisService:
         request: Optional[Request] = None,
         user_id: Optional[str],
     ):
+        url = (url_in or "").strip()
+        if not url:
+            raise ValueError("A URL não pode estar vazia")
+        if len(url) > 200:
+            raise ValueError("A URL deve ter no máximo 200 caracteres.")
+        if not (url.startswith("http://") or url.startswith("https://")):
+            raise ValueError("A URL deve começar com http:// ou https://")
+
+        host = only_host(url)
+        if not has_valid_tld(host):
+            raise ValueError("A URL deve possuir um TLD válido")
+
         actor_hash = ip_hash_from_request(request) if request else None
         resolved_user_id = resolve_user_id(request, user_id) if request else user_id
 
@@ -138,7 +150,7 @@ class UrlAnalysisService:
             label=RiskLabel.unknown,
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
-            source_url=url_in,
+            source_url=url,
         )
         self.session.add(analysis)
         await self.session.flush()
@@ -151,24 +163,23 @@ class UrlAnalysisService:
             resource="/analyses/url",
             success=True,
             details={
-                "source_url": url_in,
+                "source_url": url,
                 "quota_used": used_today,
                 "quota_limit": limit,
                 "quota_scope": scope,
             },
         )
 
-        host = only_host(url_in)
         dns_ok_flag = await dns_ok(host)
-        tld_ok = has_valid_tld(host)
+        tld_ok = True
 
         timeout = httpx.Timeout(settings.http_timeout)
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                gsb_res = await gsb_check(url_in, client)
+                gsb_res = await gsb_check(url, client)
                 ai_service = AIService(client)
                 ai_json = await ai_service.generate_for_url(
-                    url=url_in,
+                    url=url,
                     tld_ok=tld_ok,
                     dns_ok=dns_ok_flag,
                     gsb_json=gsb_res or {},
@@ -183,7 +194,7 @@ class UrlAnalysisService:
                 action="analysis.url.error",
                 resource=str(analysis.id),
                 success=False,
-                details={"source_url": url_in, "reason": "service_error"},
+                details={"source_url": url, "reason": "service_error"},
             )
             await self.session.commit()
             logger.exception("analysis.url.error")
@@ -195,7 +206,7 @@ class UrlAnalysisService:
             analysis_id=analysis.id,
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
-            url=url_in,
+            url=url,
             dns_ok=dns_ok_flag,
             gsb_json=gsb_res,
             ai_json=ai_json,

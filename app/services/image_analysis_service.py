@@ -132,7 +132,7 @@ class ImageAnalysisService:
             upload_bytes=file_content,
             filename=filename,
             content_type=mime or "application/octet-stream",
-            request=request, 
+            request=request,
             user_id=str(user_id),
         )
 
@@ -141,7 +141,7 @@ class ImageAnalysisService:
         user_id: UUID,
         file_content: bytes,
         file_count: int,
-        request: Request
+        request: Request,
     ):
         if file_count > 1:
             raise ValueError("Envio em lote não suportado. Envie um arquivo por vez.")
@@ -168,11 +168,11 @@ class ImageAnalysisService:
         user_id: Optional[str],
     ):
         if not upload_bytes:
-            raise ValueError("Arquivo vazio.")
+            raise ValueError("Arquivo vazio ou inválido.")
         if len(upload_bytes) > 1_000_000:
-            raise ValueError("A imagem não pode ultrapassar 1MB.")
+            raise ValueError("A imagem deve ter no máximo 1MB.")
         if content_type not in {"image/png", "image/jpeg", "image/jpg"}:
-            raise ValueError("Formato inválido. Aceitos: png, jpeg ou jpg.")
+            raise ValueError("Formato inválido. Aceitos: png, jpeg ou jpg")
         if (_detect_mime(upload_bytes) or "") not in ALLOWED_MIMES:
             raise ValueError("Conteúdo não reconhecido como PNG ou JPEG válido.")
 
@@ -282,7 +282,7 @@ class ImageAnalysisService:
 
         explanation = (ai_text.get("explanation") or "").strip()
         recommendations_raw = ai_text.get("recommendations") or []
-        
+
         if isinstance(recommendations_raw, list):
             recommendations = [str(x).strip() for x in recommendations_raw if str(x).strip()]
         else:
