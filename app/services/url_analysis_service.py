@@ -107,12 +107,13 @@ class UrlAnalysisService:
         self.analysis_repo = AnalysisRepository(session)
 
     async def run_analysis_with_validation(
-        self, user_id: UUID, url: str, request: Request
+        self, user_id: UUID, url: str, request: Request, token_id: Optional[UUID] = None
     ):
         return await self.analyze(
             url_in=url,
             request=request,
             user_id=str(user_id),
+            api_token_id=str(token_id) if token_id else None,
         )
 
     async def analyze(
@@ -121,6 +122,7 @@ class UrlAnalysisService:
         url_in: str,
         request: Optional[Request] = None,
         user_id: Optional[str],
+        api_token_id: Optional[str] = None,
     ):
         url = (url_in or "").strip()
         if not url:
@@ -142,6 +144,7 @@ class UrlAnalysisService:
             AnalysisType.url,
             user_id=resolved_user_id,
             actor_hash=actor_hash,
+            api_token_id=api_token_id,
         )
 
         analysis = Analysis(
@@ -151,6 +154,7 @@ class UrlAnalysisService:
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
             source_url=url,
+            api_token_id=api_token_id,
         )
         self.session.add(analysis)
         await self.session.flush()

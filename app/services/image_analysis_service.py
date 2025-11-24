@@ -142,9 +142,12 @@ class ImageAnalysisService:
         file_content: bytes,
         file_count: int,
         request: Request,
+        token_id: Optional[UUID] = None,
     ):
         if file_count > 1:
-            raise ValueError("Envio em lote não suportado. Envie um arquivo por vez.")
+            raise ValueError(
+                "Envio em lote não suportado. Envie um arquivo por vez."
+            )
 
         mime = _detect_mime(file_content)
         ext = mimetypes.guess_extension(mime or "") or ".bin"
@@ -156,7 +159,9 @@ class ImageAnalysisService:
             content_type=mime or "application/octet-stream",
             request=request,
             user_id=str(user_id),
+            api_token_id=str(token_id) if token_id else None,
         )
+
 
     async def analyze(
         self,
@@ -166,6 +171,7 @@ class ImageAnalysisService:
         content_type: str,
         request: Optional[Request] = None,
         user_id: Optional[str],
+        api_token_id: Optional[str] = None,
     ):
         if not upload_bytes:
             raise ValueError("Arquivo vazio ou inválido.")
@@ -173,9 +179,7 @@ class ImageAnalysisService:
             raise ValueError("A imagem deve ter no máximo 1MB.")
         if content_type not in {"image/png", "image/jpeg", "image/jpg"}:
             raise ValueError("Formato inválido. Aceitos: png, jpeg ou jpg")
-        if (_detect_mime(upload_bytes) or "") not in ALLOWED_MIMES:
-            raise ValueError("Conteúdo não reconhecido como PNG ou JPEG válido.")
-
+        
         if request:
             actor_hash = ip_hash_from_request(request)
             resolved_user_id = resolve_user_id(request, user_id)
@@ -188,6 +192,7 @@ class ImageAnalysisService:
             AnalysisType.image,
             user_id=resolved_user_id,
             actor_hash=actor_hash,
+            api_token_id=api_token_id,
         )
 
         analysis = Analysis(
@@ -196,6 +201,7 @@ class ImageAnalysisService:
             label=RiskLabel.unknown,
             user_id=resolved_user_id,
             actor_ip_hash=actor_hash,
+            api_token_id=api_token_id,
         )
         self.session.add(analysis)
         await self.session.flush()

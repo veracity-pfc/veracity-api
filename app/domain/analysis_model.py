@@ -18,6 +18,11 @@ class Analysis(Base):
         primary_key=True,
         default=uuid.uuid4,
     )
+    
+    api_token_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("api_tokens.id"), 
+        nullable=True)
+
     analysis_type: Mapped[AnalysisType] = mapped_column(
         PGEnum(AnalysisType, name="analysis_type", create_type=False),
         nullable=False,
