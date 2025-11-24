@@ -9,14 +9,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Tuple
 from zoneinfo import ZoneInfo
 from fastapi import Request
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ip_hash_from_request
 from app.core.config import settings
 from app.domain.audit_model import AuditLog
-from app.domain.enums import UserStatus
+from app.domain.enums import UserStatus, AnalysisType, AnalysisStatus 
 from app.domain.user_model import User
+from app.domain.analysis_model import Analysis 
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.user_repository import UserRepository
 from app.repositories.analysis_repository import AnalysisRepository
@@ -36,6 +37,28 @@ class UserService:
         self.audit_repo = AuditRepository(session)
         self.tokens = ApiTokenRepository(session)
 
+    async def _count_web_analyses(
+        self,
+        user_id: str,
+        analysis_type: str,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None
+    ) -> int:
+        stmt = select(func.count(Analysis.id)).where(
+            Analysis.user_id == user_id,
+            Analysis.api_token_id.is_(None),  
+            Analysis.analysis_type == analysis_type,
+            Analysis.status != AnalysisStatus.error
+        )
+        
+        if start_date:
+            stmt = stmt.where(Analysis.created_at >= start_date)
+        if end_date:
+            stmt = stmt.where(Analysis.created_at < end_date)
+            
+        result = await self.session.execute(stmt)
+        return result.scalar_one() or 0
+
     async def get_user_profile(self, user: Any) -> dict:
         user_id = getattr(user, "id", None)
         if not user_id:
@@ -53,32 +76,7 @@ class UserService:
         if hasattr(status_value, "value"):
             status_value = status_value.value
 
-        repo = AnalysisRepository(self.session)
         user_key = str(db_user.id)
-
-        total_urls, _ = await repo.paginated_for_user(
-            user_id=user_key,
-            page=1,
-            page_size=1,
-            q=None,
-            date_from=None,
-            date_to=None,
-            status=None,
-            analysis_type="url",
-            exclude_errors=True,
-        )
-
-        total_images, _ = await repo.paginated_for_user(
-            user_id=user_key,
-            page=1,
-            page_size=1,
-            q=None,
-            date_from=None,
-            date_to=None,
-            status=None,
-            analysis_type="image",
-            exclude_errors=True,
-        )
 
         tz = ZoneInfo("America/Sao_Paulo")
         now_local = datetime.now(tz)
@@ -87,29 +85,11 @@ class UserService:
         start_today = start_local.astimezone(timezone.utc)
         end_today = end_local.astimezone(timezone.utc)
 
-        today_urls, _ = await repo.paginated_for_user(
-            user_id=user_key,
-            page=1,
-            page_size=1,
-            q=None,
-            date_from=start_today,
-            date_to=end_today,
-            status=None,
-            analysis_type="url",
-            exclude_errors=True,
-        )
+        total_urls = await self._count_web_analyses(user_key, AnalysisType.url)
+        total_images = await self._count_web_analyses(user_key, AnalysisType.image)
 
-        today_images, _ = await repo.paginated_for_user(
-            user_id=user_key,
-            page=1,
-            page_size=1,
-            q=None,
-            date_from=start_today,
-            date_to=end_today,
-            status=None,
-            analysis_type="image",
-            exclude_errors=True,
-        )
+        today_urls = await self._count_web_analyses(user_key, AnalysisType.url, start_today, end_today)
+        today_images = await self._count_web_analyses(user_key, AnalysisType.image, start_today, end_today)
 
         url_daily_limit = int(getattr(settings, "user_url_limit", 0) or 0)
         image_daily_limit = int(getattr(settings, "user_image_limit", 0) or 0)
