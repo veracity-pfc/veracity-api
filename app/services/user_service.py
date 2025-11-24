@@ -7,7 +7,7 @@ import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Tuple
-
+from zoneinfo import ZoneInfo
 from fastapi import Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,9 +80,12 @@ class UserService:
             exclude_errors=True,
         )
 
-        now = datetime.now(timezone.utc)
-        start_today = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-        end_today = start_today + timedelta(days=1)
+        tz = ZoneInfo("America/Sao_Paulo")
+        now_local = datetime.now(tz)
+        start_local = datetime(now_local.year, now_local.month, now_local.day, tzinfo=tz)
+        end_local = start_local + timedelta(days=1)
+        start_today = start_local.astimezone(timezone.utc)
+        end_today = end_local.astimezone(timezone.utc)
 
         today_urls, _ = await repo.paginated_for_user(
             user_id=user_key,
@@ -132,6 +135,14 @@ class UserService:
             "status": status_value,
             "api_token_info": api_token_info,
             "stats": {
+                "limits": {
+                    "urls": url_daily_limit,
+                    "images": image_daily_limit,
+                },
+                "today": {
+                    "urls": today_urls,
+                    "images": today_images,
+                },
                 "remaining": {
                     "urls": remaining_urls,
                     "images": remaining_images,

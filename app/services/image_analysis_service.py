@@ -126,13 +126,35 @@ class ImageAnalysisService:
     async def run_analysis(self, user_id: UUID, file_content: bytes, request: Request):
         mime = _detect_mime(file_content)
         ext = mimetypes.guess_extension(mime or "") or ".bin"
-        filename = f"api_upload_{datetime.now().timestamp()}{ext}"
+        filename = f"upload_{datetime.now().timestamp()}{ext}"
 
         return await self.analyze(
             upload_bytes=file_content,
             filename=filename,
             content_type=mime or "application/octet-stream",
             request=request, 
+            user_id=str(user_id),
+        )
+
+    async def run_analysis_with_validation(
+        self,
+        user_id: UUID,
+        file_content: bytes,
+        file_count: int,
+        request: Request
+    ):
+        if file_count > 1:
+            raise ValueError("Envio em lote não suportado. Envie um arquivo por vez.")
+
+        mime = _detect_mime(file_content)
+        ext = mimetypes.guess_extension(mime or "") or ".bin"
+        filename = f"api_upload_{datetime.now().timestamp()}{ext}"
+
+        return await self.analyze(
+            upload_bytes=file_content,
+            filename=filename,
+            content_type=mime or "application/octet-stream",
+            request=request,
             user_id=str(user_id),
         )
 

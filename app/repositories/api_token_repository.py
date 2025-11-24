@@ -63,7 +63,6 @@ class ApiTokenRepository:
         return result.scalars().first()
 
     async def mark_revealed(self, token: ApiToken, revealed_at: datetime) -> ApiToken:
-        """Marks the token as revealed by setting the revealed_at timestamp."""
         token.revealed_at = revealed_at
         self.session.add(token)
         await self.session.flush()
@@ -76,7 +75,6 @@ class ApiTokenRepository:
         admin_id: Optional[UUID],
         now: datetime,
     ) -> ApiToken:
-        """Revokes a token."""
         token.status = ApiTokenStatus.revoked
         token.revoked_at = now
         token.revoked_reason = reason
@@ -86,7 +84,6 @@ class ApiTokenRepository:
         return token
 
     async def get_expired_active_tokens(self, now: datetime) -> List[ApiToken]:
-        """Gets all active tokens that have expired."""
         stmt = select(ApiToken).where(
             ApiToken.status == ApiTokenStatus.active,
             ApiToken.expires_at < now,

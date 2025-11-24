@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.domain.analysis_model import Analysis
-from app.domain.enums import AnalysisType
+from app.domain.enums import AnalysisType, AnalysisStatus
 
 
 async def _count_today(
@@ -23,10 +23,11 @@ async def _count_today(
     now = datetime.now(tz)
     start_local = datetime(now.year, now.month, now.day, tzinfo=tz)
     start_utc = start_local.astimezone(timezone.utc)
-    
+
     q = select(func.count(Analysis.id)).where(
         Analysis.analysis_type == analysis_type,
         Analysis.created_at >= start_utc,
+        Analysis.status != AnalysisStatus.error,
     )
     if user_id:
         q = q.where(Analysis.user_id == user_id)
