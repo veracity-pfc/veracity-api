@@ -54,28 +54,21 @@ class ContactService:
         if not user_id:
             return
 
-        if category in [ContactCategory.doubt, ContactCategory.complaint]:
-            count = await self.repo.count_by_user_and_category_status(
-                user_id=user_id,
-                category=category,
-                status=ContactStatus.open,
+        count = await self.repo.count_by_user_and_category_status(
+            user_id=user_id,
+            category=category,
+            status=ContactStatus.open,
+        )
+        if count > 0:
+            cat_name = {
+                ContactCategory.doubt: "dúvida",
+                ContactCategory.complaint: "reclamação",
+                ContactCategory.suggestion: "sugestão",
+            }.get(category, "solicitação")
+            
+            raise ValueError(
+                f"Você já possui uma {cat_name} em aberto. Aguarde a resposta."
             )
-            if count > 0:
-                msg = "dúvida" if category == ContactCategory.doubt else "reclamação"
-                raise ValueError(
-                    f"Você já possui uma {msg} em aberto. Aguarde a resposta."
-                )
-
-        elif category == ContactCategory.suggestion:
-            now = datetime.now(timezone.utc)
-            one_day_ago = now - timedelta(days=1)
-            count = await self.repo.count_recent_by_user_and_category(
-                user_id=user_id,
-                category=category,
-                since=one_day_ago,
-            )
-            if count >= 3:
-                raise ValueError("Você atingiu o limite de 3 sugestões por dia.")
 
     async def process_contact_request(
         self,

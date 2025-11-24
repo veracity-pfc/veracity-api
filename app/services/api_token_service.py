@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import ip_hash_from_request
 from app.core.config import settings
 from app.core.constants import TOKEN_PREFIX, DEFAULT_TOKEN_TTL_DAYS
 from app.domain.api_token_model import ApiToken
@@ -78,6 +79,37 @@ class ApiTokenService:
             "user_email": token.user.email if token.user else None,
             "analysis_type": "token",
         }
+
+    async def create_token_request_from_contact(
+        self,
+        *,
+        user_id: UUID,
+        email: str,
+        message: str,
+        request_obj,
+    ) -> ApiTokenRequest:
+        existing_open = await self.requests.get_open_by_user(user_id)
+        if existing_open:
+            raise ValueError("Você já possui uma solicitação de token em aberto. Aguarde a análise.")
+
+        req = await self.requests.create(
+            user_id=user_id,
+            email=email,
+            message=message,
+            status=ApiTokenRequestStatus.open,
+        )
+
+        await self.audit.insert(
+            table=AuditLog,
+            user_id=user_id,
+            actor_ip_hash=ip_hash_from_request(request_obj),
+            action="api_token_request.create",
+            resource="/v1/contact-us",
+            success=True,
+            details={"request_id": str(req.id), "email": email},
+        )
+        await self.session.commit()
+        return req
 
     async def list_requests(
         self,

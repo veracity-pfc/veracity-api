@@ -17,7 +17,7 @@ from app.schemas.api_token_request import (
     ApiTokenRequestRead,
     RejectBody,
 )
-from app.schemas.contact import (
+from app.schemas.contact_request import (
     ContactRequestReplyBody,
     UnifiedRequestDetail,
     UnifiedRequestPageOut,

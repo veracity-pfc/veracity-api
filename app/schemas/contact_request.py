@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Union, Literal
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from app.domain.enums import ContactCategory, ContactStatus
@@ -9,7 +9,7 @@ class ContactMessageIn(BaseModel):
     email: EmailStr = Field(max_length=60)
     subject: str = Field(min_length=3, max_length=100)
     message: str = Field(min_length=10, max_length=4000)
-    category: ContactCategory
+    category: Union[ContactCategory, Literal['token_request']]
 
 class ContactRequestRead(BaseModel):
     id: UUID

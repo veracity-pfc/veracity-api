@@ -120,6 +120,33 @@ class ApiTokenRequestRepository:
     async def get(self, request_id: UUID) -> Optional[ApiTokenRequest]:
         return await self.session.get(ApiTokenRequest, request_id)
 
+    async def get_open_by_user(self, user_id: UUID) -> Optional[ApiTokenRequest]:
+        stmt = select(ApiTokenRequest).where(
+            ApiTokenRequest.user_id == user_id,
+            ApiTokenRequest.status == ApiTokenRequestStatus.open,
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def create(
+        self,
+        *,
+        user_id: UUID,
+        email: str,
+        message: str,
+        status: ApiTokenRequestStatus = ApiTokenRequestStatus.open,
+    ) -> ApiTokenRequest:
+        req = ApiTokenRequest(
+            user_id=user_id,
+            email=email,
+            message=message,
+            status=status,
+        )
+        self.session.add(req)
+        await self.session.flush()
+        await self.session.refresh(req)
+        return req
+
     async def paginated(
         self,
         *,
