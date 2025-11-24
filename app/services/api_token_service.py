@@ -92,6 +92,10 @@ class ApiTokenService:
         if existing_open:
             raise ValueError("Você já possui uma solicitação de token em aberto. Aguarde a análise.")
 
+        has_active = await self.tokens.user_has_active_token(user_id)
+        if has_active:
+            raise ValueError("Você já possui um token de API ativo. É necessário revogá-lo antes de solicitar um novo.")
+
         req = await self.requests.create(
             user_id=user_id,
             email=email,
