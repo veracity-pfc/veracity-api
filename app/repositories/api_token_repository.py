@@ -25,6 +25,14 @@ class ApiTokenRepository:
         res = await self.session.execute(stmt)
         return (res.scalar_one() or 0) > 0
 
+    async def get_active_by_user(self, user_id: UUID) -> Optional[ApiToken]:
+        stmt = select(ApiToken).where(
+            ApiToken.user_id == user_id,
+            ApiToken.status == ApiTokenStatus.active,
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
     async def create(
         self,
         *,
@@ -53,6 +61,38 @@ class ApiTokenRepository:
         stmt = select(ApiToken).where(ApiToken.token_hash == token_hash)
         result = await self.session.execute(stmt)
         return result.scalars().first()
+
+    async def mark_revealed(self, token: ApiToken, revealed_at: datetime) -> ApiToken:
+        """Marks the token as revealed by setting the revealed_at timestamp."""
+        token.revealed_at = revealed_at
+        self.session.add(token)
+        await self.session.flush()
+        return token
+
+    async def revoke(
+        self,
+        token: ApiToken,
+        reason: Optional[str],
+        admin_id: Optional[UUID],
+        now: datetime,
+    ) -> ApiToken:
+        """Revokes a token."""
+        token.status = ApiTokenStatus.revoked
+        token.revoked_at = now
+        token.revoked_reason = reason
+        token.revoked_by_admin_id = admin_id
+        self.session.add(token)
+        await self.session.flush()
+        return token
+
+    async def get_expired_active_tokens(self, now: datetime) -> List[ApiToken]:
+        """Gets all active tokens that have expired."""
+        stmt = select(ApiToken).where(
+            ApiToken.status == ApiTokenStatus.active,
+            ApiToken.expires_at < now,
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
 
     async def update(self, token: ApiToken) -> ApiToken:
         self.session.add(token)

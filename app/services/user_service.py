@@ -20,6 +20,7 @@ from app.domain.user_model import User
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.user_repository import UserRepository
 from app.repositories.analysis_repository import AnalysisRepository
+from app.repositories.api_token_repository import ApiTokenRepository
 from app.services.email_service import (
     send_email,
     reactivate_account_email_html,
@@ -33,6 +34,7 @@ class UserService:
         self.session = session
         self.users = UserRepository(session)
         self.audit_repo = AuditRepository(session)
+        self.tokens = ApiTokenRepository(session)
 
     async def get_user_profile(self, user: Any) -> dict:
         user_id = getattr(user, "id", None)
@@ -112,12 +114,23 @@ class UserService:
         remaining_urls = max(url_daily_limit - today_urls, 0) if url_daily_limit else 0
         remaining_images = max(image_daily_limit - today_images, 0) if image_daily_limit else 0
 
+        api_token_info = None
+        active_token = await self.tokens.get_active_by_user(db_user.id)
+        if active_token:
+            api_token_info = {
+                "prefix": active_token.token_prefix,
+                "status": active_token.status.value,
+                "expires_at": active_token.expires_at,
+                "revealed": bool(active_token.revealed_at),
+            }
+
         return {
             "id": str(db_user.id),
             "name": db_user.name,
             "email": db_user.email,
             "role": role_value,
             "status": status_value,
+            "api_token_info": api_token_info,
             "stats": {
                 "remaining": {
                     "urls": remaining_urls,
