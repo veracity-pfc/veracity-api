@@ -6,12 +6,11 @@ from math import ceil
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from zoneinfo import ZoneInfo
 
 from app.domain.enums import RiskLabel
 from app.repositories.analysis_repository import AnalysisRepository
 from app.schemas.history import HistoryDetailOut, HistoryItemOut, HistoryPageOut
-from app.domain.ai_model import AIResponse
-
 
 def normalize_date_range(
     date_from: Optional[datetime],
@@ -20,21 +19,24 @@ def normalize_date_range(
     start = None
     end = None
 
+    tz = ZoneInfo("America/Sao_Paulo")
+
     if date_from:
         d = date_from
         if d.tzinfo is None:
-            d = d.replace(tzinfo=timezone.utc)
-        start = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+            d = d.replace(tzinfo=tz)
+        local_start = datetime(d.year, d.month, d.day, tzinfo=tz)
+        start = local_start.astimezone(timezone.utc)
 
     if date_to:
         d = date_to
         if d.tzinfo is None:
-            d = d.replace(tzinfo=timezone.utc)
-        base = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
-        end = base + timedelta(days=1)
+            d = d.replace(tzinfo=tz)
+        local_base = datetime(d.year, d.month, d.day, tzinfo=tz)
+        base_utc = local_base.astimezone(timezone.utc)
+        end = base_utc + timedelta(days=1)
 
     return start, end
-
 
 class HistoryService:
     def __init__(self, session: AsyncSession):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, Optional
 from uuid import UUID
 
@@ -112,7 +113,26 @@ async def list_token_requests(
     _: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    if date_from and date_to and date_to < date_from:
+    tz = ZoneInfo("America/Sao_Paulo")
+
+    range_from = None
+    range_to = None
+
+    if date_from:
+        d = date_from
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=tz)
+        local_start = datetime(d.year, d.month, d.day, tzinfo=tz)
+        range_from = local_start.astimezone(timezone.utc)
+
+    if date_to:
+        d = date_to
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=tz)
+        local_end = datetime(d.year, d.month, d.day, 23, 59, 59, 999999, tzinfo=tz)
+        range_to = local_end.astimezone(timezone.utc)
+
+    if range_from and range_to and range_to < range_from:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Data final inválida.",
@@ -123,8 +143,8 @@ async def list_token_requests(
         page=page,
         page_size=page_size,
         status=status_filter,
-        date_from=date_from,
-        date_to=date_to,
+        date_from=range_from,
+        date_to=range_to,
         email=email,
     )
     items = [
@@ -144,7 +164,6 @@ async def list_token_requests(
         total=total,
         total_pages=total_pages,
     )
-
 
 @router.get("/api/token-requests/{request_id}", response_model=ApiTokenRequestRead)
 async def get_token_request(
@@ -231,20 +250,60 @@ async def list_tokens(
     _: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    if date_from and date_to and date_to < date_from:
+    tz = ZoneInfo("America/Sao_Paulo")
+
+    start_date = date_from.date() if date_from else None
+    end_date = date_to.date() if date_to else None
+
+    if start_date and end_date and end_date < start_date:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Data final inválida.",
         )
+
     svc = ApiTokenService(session)
-    total, total_pages, rows = await svc.list_tokens(
-        page=page,
-        page_size=page_size,
+
+    internal_page_size = 10000
+    internal_page = 1
+
+    total, _total_pages, rows = await svc.list_tokens(
+        page=internal_page,
+        page_size=internal_page_size,
         status=status_filter,
-        date_from=date_from,
-        date_to=date_to,
+        date_from=None,
+        date_to=None,
         email=email,
     )
+
+    filtered_rows = []
+
+    for row in rows:
+        created = row.created_at
+        if not created:
+            continue
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        created_local = created.astimezone(tz)
+        created_day = created_local.date()
+
+        if start_date and created_day < start_date:
+            continue
+        if end_date and created_day > end_date:
+            continue
+
+        filtered_rows.append(row)
+
+    total_filtered = len(filtered_rows)
+
+    if page_size <= 0:
+        page_size = 10
+
+    start_index = (page - 1) * page_size
+    end_index = start_index + page_size
+    page_rows = filtered_rows[start_index:end_index]
+
+    total_pages = (total_filtered + page_size - 1) // page_size if page_size else 1
+
     items = [
         ApiTokenListItem(
             id=row.id,
@@ -255,13 +314,14 @@ async def list_tokens(
             last_used_at=row.last_used_at,
             user_email=row.user.email,
         )
-        for row in rows
+        for row in page_rows
     ]
+
     return ApiTokenPageOut(
         items=items,
         page=page,
         page_size=page_size,
-        total=total,
+        total=total_filtered,
         total_pages=total_pages,
     )
 
