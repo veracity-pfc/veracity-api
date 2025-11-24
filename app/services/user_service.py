@@ -415,12 +415,32 @@ class UserService:
             await self.session.commit()
             raise
 
+    async def _revoke_active_token_for_user_auto(self, user_id: str, reason: str) -> None:
+        token = await self.tokens.get_active_by_user(user_id)
+        if not token:
+            return
+        now = datetime.now(timezone.utc)
+        await self.tokens.revoke(token, reason=reason, admin_id=None, now=now)
+        await self.audit_repo.insert(
+            AuditLog,
+            user_id=str(user_id),
+            actor_ip_hash=None,
+            action="api_token.revoke_user_auto",
+            resource="/v1/user/account",
+            success=True,
+            details={"reason": reason, "token_id": str(token.id)},
+        )
+
     async def inactivate_account(self, user_id: str) -> None:
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
         user.status = UserStatus.inactive
         await self.users.update(user)
+        await self._revoke_active_token_for_user_auto(
+            user_id=str(user.id),
+            reason="Conta inativada pelo usuário",
+        )
         await self.audit_repo.insert(
             AuditLog,
             user_id=str(user.id),
@@ -440,6 +460,10 @@ class UserService:
         user.email = f"deleted+{suffix}@deleted.local"
         user.name = "Conta excluída"
         await self.users.update(user)
+        await self._revoke_active_token_for_user_auto(
+            user_id=str(user.id),
+            reason="Conta excluída pelo usuário",
+        )
         await self.audit_repo.insert(
             AuditLog,
             user_id=str(user.id),
