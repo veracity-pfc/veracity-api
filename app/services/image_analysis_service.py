@@ -143,6 +143,7 @@ class ImageAnalysisService:
         file_count: int,
         request: Request,
         token_id: Optional[UUID] = None,
+        original_filename: Optional[str] = None, 
     ):
         if file_count > 1:
             raise ValueError(
@@ -150,8 +151,12 @@ class ImageAnalysisService:
             )
 
         mime = _detect_mime(file_content)
-        ext = mimetypes.guess_extension(mime or "") or ".bin"
-        filename = f"token_{datetime.now().timestamp()}{ext}"
+        
+        if original_filename:
+            filename = original_filename
+        else:
+            ext = mimetypes.guess_extension(mime or "") or ".bin"
+            filename = f"token_{datetime.now().timestamp()}{ext}"
 
         return await self.analyze(
             upload_bytes=file_content,

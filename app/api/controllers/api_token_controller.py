@@ -188,6 +188,7 @@ async def token_image_analysis(
             len(file),
             request,
             token_id=token_obj.id,
+            original_filename=uploaded_file.filename,  
         )
     except ValueError as exc:
         raise HTTPException(
