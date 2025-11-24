@@ -12,6 +12,7 @@ from app.domain.enums import RiskLabel
 from app.repositories.analysis_repository import AnalysisRepository
 from app.schemas.history import HistoryDetailOut, HistoryItemOut, HistoryPageOut
 
+
 def normalize_date_range(
     date_from: Optional[datetime],
     date_to: Optional[datetime],
@@ -37,6 +38,7 @@ def normalize_date_range(
         end = base_utc + timedelta(days=1)
 
     return start, end
+
 
 class HistoryService:
     def __init__(self, session: AsyncSession):
@@ -79,6 +81,17 @@ class HistoryService:
                 status_val = r[4].value if hasattr(r[4], "value") else str(r[4])
                 source_url = r[5]
 
+                token_id = None
+                try:
+                    token_id = getattr(r, "api_token_id", None)
+                except Exception:
+                    try:
+                        if len(r) > 6:
+                            token_id = r[6]
+                    except Exception:
+                        token_id = None
+                via_token = bool(token_id)
+
                 source = source_url or "—"
                 if a_type == "image":
                     img = await self.repo.get_image_analysis_by_analysis_id(analysis_id)
@@ -93,6 +106,7 @@ class HistoryService:
                         label=label,
                         status=status_val,
                         source=source,
+                        via_token=via_token,
                     )
                 )
 
@@ -152,6 +166,17 @@ class HistoryService:
             source = source_url or "—"
             filename = None
 
+            token_id = None
+            try:
+                token_id = getattr(r, "api_token_id", None)
+            except Exception:
+                try:
+                    if len(r) > 6:
+                        token_id = r[6]
+                except Exception:
+                    token_id = None
+            via_token = bool(token_id)
+
             if a_type == "image":
                 img = await self.repo.get_image_analysis_by_analysis_id(analysis_id)
                 if img and img.meta:
@@ -165,7 +190,7 @@ class HistoryService:
 
             if source_for_search and q_normalized in source_for_search.lower():
                 filtered_raw.append(
-                    (analysis_id, created_at, a_type, label, status_val, filename, source)
+                    (analysis_id, created_at, a_type, label, status_val, filename, source, via_token)
                 )
 
         total_filtered = len(filtered_raw)
@@ -176,7 +201,7 @@ class HistoryService:
         page_slice = filtered_raw[start_index:end_index]
 
         items: list[HistoryItemOut] = []
-        for analysis_id, created_at, a_type, label, status_val, filename, source in page_slice:
+        for analysis_id, created_at, a_type, label, status_val, filename, source, via_token in page_slice:
             display_source = filename or source or "—"
             items.append(
                 HistoryItemOut(
@@ -186,6 +211,7 @@ class HistoryService:
                     label=label,
                     status=status_val,
                     source=display_source,
+                    via_token=via_token,
                 )
             )
 
@@ -247,4 +273,5 @@ class HistoryService:
             ai_summary=summary,
             ai_recommendations=recs,
             ai_raw=raw,
+            via_token=bool(getattr(row, "api_token_id", None)),
         )

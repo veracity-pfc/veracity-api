@@ -10,7 +10,8 @@ class HistoryItemOut(BaseModel):
     analysis_type: AnalysisType
     label: RiskLabel
     status: str
-    source: Optional[str] = None 
+    source: Optional[str] = None
+    via_token: bool = False
 
 class HistoryPageOut(BaseModel):
     items: List[HistoryItemOut]
@@ -38,3 +39,4 @@ class HistoryDetailOut(BaseModel):
     ai_summary: Optional[str] = None
     ai_recommendations: list[str] = []
     ai_raw: Optional[str] = None 
+    via_token: bool = False
