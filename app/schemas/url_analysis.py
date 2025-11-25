@@ -38,7 +38,7 @@ class UrlAnalysisIn(BaseModel):
         if not has_valid_tld(host):
             raise PydanticCustomError(
                 "url_tld",
-                "A URL deve possuir um TLD válido",
+                "A URL deve possuir um TLD válido (.com, .com.br, .gov.br...)",
                 {"reason": "invalid_tld"},
             )
         return v
