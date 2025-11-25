@@ -1,6 +1,6 @@
 import re
 
-ALLOWED_MIMES = {"image/png", "image/jpeg"}
+ALLOWED_MIMES = {"image/png", "image/jpeg", "image.jpg"}
 
 CODE_RE = re.compile(r"^\d{6}$")
 

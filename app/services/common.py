@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional
+
+logger = logging.getLogger("veracity.common_service")
 
 
 def resolve_user_id(request, explicit_user_id: Optional[str]) -> Optional[str]:
@@ -23,6 +26,7 @@ def resolve_user_id(request, explicit_user_id: Optional[str]) -> Optional[str]:
                 candidate = user2
         if candidate:
             return str(candidate)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to resolve user ID from request: {str(e)}")
         return None
     return None

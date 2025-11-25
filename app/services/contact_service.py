@@ -21,7 +21,7 @@ from app.services.utils.email_utils import (
     send_email,
 )
 
-logger = logging.getLogger("veracity.contact")
+logger = logging.getLogger("veracity.contact_service")
 
 
 class ContactService:
@@ -38,6 +38,7 @@ class ContactService:
         category: Optional[ContactCategory] = None,
         email: Optional[str] = None,
     ) -> Tuple[int, int, List[ContactRequest]]:
+        logger.info(f"Listing contact requests. Page: {page}, Status: {status}, Category: {category}")
         total, rows = await self.repo.paginated(
             page=page,
             page_size=page_size,
@@ -60,6 +61,7 @@ class ContactService:
             status=ContactStatus.open,
         )
         if count > 0:
+            logger.warning(f"Rate limit hit for user {user_id} on category {category.value}")
             cat_name = {
                 ContactCategory.doubt: "dúvida",
                 ContactCategory.complaint: "reclamação",
@@ -82,6 +84,8 @@ class ContactService:
         ip_hash = ip_hash_from_request(request_obj)
         user_id = user.id if user else None
 
+        logger.info(f"Processing new contact request. Category: {category.value}, UserID: {user_id}")
+        
         await self._check_rate_limit(user_id, category)
 
         new_req = ContactRequest(
@@ -104,15 +108,19 @@ class ContactService:
             details={"category": category.value, "subject": subject, "email": email},
         )
         await self.session.commit()
+        logger.info(f"Contact request created successfully. ID: {new_req.id}")
 
     async def reply_request(
         self, request_id: UUID, admin_user: User, reply_message: str
     ) -> ContactRequest:
+        logger.info(f"Admin {admin_user.id} initiating reply to request {request_id}")
         req = await self.repo.get(request_id)
         if not req:
+            logger.warning(f"Reply failed: Request {request_id} not found")
             raise ValueError("Solicitação não encontrada.")
 
         if req.status != ContactStatus.open:
+            logger.warning(f"Reply failed: Request {request_id} is not open")
             raise ValueError("Esta solicitação já foi respondida.")
 
         now = datetime.now(timezone.utc)
@@ -124,6 +132,7 @@ class ContactService:
         is_deleted_user = "deleted.local" in user_email
 
         if is_deleted_user:
+            logger.info(f"Closing request {request_id} automatically (deleted user)")
             req.status = ContactStatus.answered
             req.admin_reply = "Solicitação encerrada pois a conta foi excluída da plataforma."
             req.replied_at = now
@@ -139,8 +148,9 @@ class ContactService:
                     req.subject, req.message, reply_message
                 )
                 await send_email(req.email, f"Resposta: {req.subject}", html)
+                logger.info(f"Reply email sent successfully for request {request_id}")
             except EmailError:
-                logger.error(f"Falha ao enviar email de resposta para {req.id}")
+                logger.error(f"Failed to send reply email for request {req.id}")
 
         await self.audit.insert(
             AuditLog,

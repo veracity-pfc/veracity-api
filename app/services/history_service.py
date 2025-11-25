@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from math import ceil
 from typing import Optional, Any
@@ -11,6 +12,8 @@ from zoneinfo import ZoneInfo
 from app.domain.enums import RiskLabel
 from app.repositories.analysis_repository import AnalysisRepository
 from app.schemas.history import HistoryDetailOut, HistoryItemOut, HistoryPageOut
+
+logger = logging.getLogger("veracity.history_service")
 
 
 def normalize_date_range(
@@ -80,6 +83,7 @@ class HistoryService:
         analysis_type,
         origin: Optional[str] = None,
     ) -> HistoryPageOut:
+        logger.info(f"Listing history for user {user_id}. Page: {page}, Type: {analysis_type}, Query: {bool(q)}")
         start, end = normalize_date_range(date_from, date_to)
 
         if not q and not origin:
@@ -249,6 +253,7 @@ class HistoryService:
         try:
             data = json.loads(content)
         except Exception:
+            logger.warning("Failed to parse AI content JSON")
             return None, [], content
 
         summary = data.get("explanation") or data.get("summary") or None
@@ -263,12 +268,14 @@ class HistoryService:
         analysis_id: str,
         user_id: str,
     ) -> Optional[HistoryDetailOut]:
+        logger.debug(f"Fetching history detail {analysis_id} for user {user_id}")
         row = await self.repo.find_one_for_user(
             analysis_id=analysis_id,
             user_id=user_id,
             exclude_errors=True,
         )
         if not row:
+            logger.info(f"History detail {analysis_id} not found for user {user_id}")
             return None
 
         ai_resp = None

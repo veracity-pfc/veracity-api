@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -23,6 +24,8 @@ from app.services.utils.email_utils import (
     verification_email_html,
 )
 from app.api.deps import ip_hash_from_request
+
+logger = logging.getLogger("veracity.auth_service")
 
 
 class AuthService:
@@ -59,9 +62,12 @@ class AuthService:
 
     async def login(self, email: str, password: str, request: Request) -> str:
         email = (email or "").strip().lower()
+        logger.info(f"Login attempt for email: {email}")
+
         user = await self.user_repo.get_by_email(email)
 
         if not user:
+            logger.warning(f"Login failed: User not found for email {email}")
             await self.audit_repo.insert(
                 AuditLog,
                 user_id=None,
@@ -82,6 +88,7 @@ class AuthService:
             is_active = True
 
         if not is_active:
+            logger.warning(f"Login failed: Account inactive for email {email}")
             await self.audit_repo.insert(
                 AuditLog,
                 user_id=user.id,
@@ -96,6 +103,7 @@ class AuthService:
             )
 
         if not self._verify_password(password, user.password_hash):
+            logger.warning(f"Login failed: Invalid password for email {email}")
             await self.audit_repo.insert(
                 AuditLog,
                 user_id=user.id,
@@ -108,6 +116,7 @@ class AuthService:
             raise ValueError("Credenciais inválidas.")
 
         token = self._create_token(user)
+        logger.info(f"Login successful for user ID: {user.id}")
         await self.audit_repo.insert(
             AuditLog,
             user_id=user.id,
@@ -126,11 +135,13 @@ class AuthService:
         accepted_terms: bool,
         request: Request,
     ) -> None:
+        logger.info(f"Register attempt for email: {email}")
         if not accepted_terms:
             raise ValueError("Termos de uso obrigatórios.")
 
         email = email.strip().lower()
         if await self.user_repo.get_by_email(email):
+            logger.info(f"Register failed: Email {email} already exists")
             raise ValueError("E-mail já cadastrado.")
 
         await self.pending_repo.delete_by_email(email)
@@ -153,8 +164,10 @@ class AuthService:
             html = verification_email_html(name, code)
             await send_email(email, "Confirme seu e-mail", html)
         except Exception as exc:
+            logger.error(f"Failed to send registration email to {email}: {exc}")
             raise ValueError(f"Falha ao enviar e-mail: {exc}")
 
+        logger.info(f"Registration pending created for {email}, ID: {pending.id}")
         await self.audit_repo.insert(
             AuditLog,
             user_id=None,
@@ -168,11 +181,14 @@ class AuthService:
 
     async def verify_email(self, email: str, code: str, request: Request) -> str:
         email = (email or "").strip().lower()
+        logger.info(f"Verifying email: {email}")
         pending = await self.pending_repo.get_by_email(email)
 
         if not pending:
+            logger.warning(f"Verify failed: No pending registration for {email}")
             raise ValueError("Solicitação não encontrada.")
         if pending.attempts >= 3:
+            logger.warning(f"Verify failed: Too many attempts for {email}")
             await self.pending_repo.delete(pending)
             await self.session.commit()
             raise ValueError("Muitas tentativas. Registre-se novamente.")
@@ -195,6 +211,7 @@ class AuthService:
         await self.pending_repo.delete(pending)
 
         await self.session.commit()
+        logger.info(f"User created successfully: {user.id}")
 
         await self.audit_repo.link_registration_to_user(
             registration_id=str(pending.id),
@@ -214,6 +231,7 @@ class AuthService:
 
     async def resend_code(self, email: str, request: Request) -> None:
         email = (email or "").strip().lower()
+        logger.info(f"Resend code requested for {email}")
         pending = await self.pending_repo.get_by_email(email)
         if not pending:
             raise ValueError("Solicitação não encontrada.")
@@ -249,11 +267,13 @@ class AuthService:
 
     async def forgot_password(self, email: str, request: Request) -> None:
         email = (email or "").strip().lower()
+        logger.info(f"Forgot password requested for {email}")
         if not EMAIL_RE.match(email) or len(email) > 60:
             raise ValueError("O e-mail digitado não é válido. Tente novamente.")
 
         user = await self.user_repo.get_by_email(email)
         if not user:
+            logger.info(f"Forgot password: User not found for {email}")
             raise ValueError("O e-mail informado não está vinculado a nenhuma conta.")
         if user.status != UserStatus.active:
             raise ValueError(
@@ -283,6 +303,7 @@ class AuthService:
     async def reset_password(
         self, token: str, password: str, confirm: str, request: Request
     ) -> None:
+        logger.info(f"Password reset attempt with token: {token}")
         password = password or ""
         confirm = confirm or ""
 
@@ -303,6 +324,7 @@ class AuthService:
 
         reset = await self.pwd_repo.get_by_id(token)
         if not reset or reset.used_at or reset.expires_at < datetime.now(timezone.utc):
+            logger.warning("Password reset failed: Invalid or expired token")
             raise ValueError("Link inválido ou expirado.")
 
         user = await self.user_repo.get_by_id(reset.user_id)
@@ -317,6 +339,7 @@ class AuthService:
 
         await self.pwd_repo.mark_used(token, datetime.now(timezone.utc))
 
+        logger.info(f"Password reset successful for user ID: {user.id}")
         await self.audit_repo.insert(
             AuditLog,
             user_id=user.id,
@@ -336,6 +359,7 @@ class AuthService:
             pass
 
         if user_id:
+            logger.info(f"User logout: {user_id}")
             await self.audit_repo.insert(
                 AuditLog,
                 user_id=user_id,

@@ -28,7 +28,7 @@ from app.services.ai_service import AIService
 from app.services.common import resolve_user_id
 from app.services.utils.quota_utils import check_daily_limit
 
-logger = logging.getLogger("veracity.link_analysis")
+logger = logging.getLogger("veracity.url_analysis_service")
 
 
 def only_host(url: str) -> str:
@@ -41,6 +41,7 @@ async def dns_ok(host: str) -> bool:
         await asyncio.wait_for(loop.getaddrinfo(host, None), timeout=DNS_TIMEOUT)
         return True
     except Exception:
+        logger.warning(f"DNS resolution failed for host: {host}")
         return False
 
 
@@ -78,23 +79,21 @@ async def gsb_check(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
             headers={"X-Goog-Api-Key": settings.gsb_api_key},
             json=body,
         )
-    except httpx.HTTPError:
+        duration = round((time.perf_counter() - t0) * 1000, 1)
+        logger.info(f"GSB check finished. Status: {r.status_code}, Duration: {duration}ms")
+
+    except httpx.HTTPError as e:
+        logger.error(f"GSB connection error: {str(e)}")
         raise ValueError(GENERIC_ANALYSIS_ERROR)
 
-    logger.info(
-        "gsb.response",
-        extra={
-            "status": r.status_code,
-            "ms": round((time.perf_counter() - t0) * 1000, 1),
-        },
-    )
-
     if r.status_code >= 400:
+        logger.error(f"GSB API returned error status: {r.status_code}")
         raise ValueError(GENERIC_ANALYSIS_ERROR)
 
     try:
         data = r.json() or {"matches": []}
     except ValueError:
+        logger.error("Failed to parse GSB response JSON")
         raise ValueError(GENERIC_ANALYSIS_ERROR)
 
     return data
@@ -125,6 +124,8 @@ class UrlAnalysisService:
         api_token_id: Optional[str] = None,
     ):
         url = (url_in or "").strip()
+        logger.info(f"Initiating URL analysis. UserID: {user_id}, TokenID: {api_token_id}")
+
         if not url:
             raise ValueError("A URL não pode estar vazia")
         if len(url) > 200:
@@ -134,6 +135,7 @@ class UrlAnalysisService:
 
         host = only_host(url)
         if not has_valid_tld(host):
+            logger.warning(f"Invalid TLD detected for URL: {url}")
             raise ValueError("A URL deve possuir um TLD válido")
 
         actor_hash = ip_hash_from_request(request) if request else None
@@ -158,6 +160,7 @@ class UrlAnalysisService:
         )
         self.session.add(analysis)
         await self.session.flush()
+        logger.info(f"Analysis record created. ID: {analysis.id}")
 
         await self.audit.insert(
             table=AuditLog,
@@ -190,6 +193,7 @@ class UrlAnalysisService:
                 )
 
         except Exception as exc:
+            logger.exception(f"Error during URL analysis processing for ID: {analysis.id}")
             analysis.status = AnalysisStatus.error
             await self.audit.insert(
                 table=AuditLog,
@@ -201,10 +205,10 @@ class UrlAnalysisService:
                 details={"source_url": url, "reason": "service_error"},
             )
             await self.session.commit()
-            logger.exception("analysis.url.error")
             raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
 
         label_enum = map_pt_label_to_enum(ai_json.get("classification", ""))
+        logger.info(f"Analysis classified. ID: {analysis.id}, Label: {label_enum.value}")
 
         url_row = UrlAnalysis(
             analysis_id=analysis.id,

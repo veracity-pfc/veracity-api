@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from math import ceil
@@ -34,6 +35,8 @@ from app.services.utils.email_utils import (
     send_email,
 )
 from app.services.history_service import normalize_date_range
+
+logger = logging.getLogger("veracity.api_token_service")
 
 
 class ApiTokenService:
@@ -88,6 +91,7 @@ class ApiTokenService:
         message: str,
         request_obj,
     ) -> ApiTokenRequest:
+        logger.info(f"Creating token request for user {user_id}")
         existing_open = await self.requests.get_open_by_user(user_id)
         if existing_open:
             raise ValueError("Você já possui uma solicitação de token em aberto. Aguarde a análise.")
@@ -168,6 +172,7 @@ class ApiTokenService:
         request_id: UUID,
         admin_id: UUID,
     ):
+        logger.info(f"Approving token request {request_id} by admin {admin_id}")
         req = await self.requests.get(request_id)
         if not req:
             raise ValueError("Solicitação não encontrada.")
@@ -192,7 +197,7 @@ class ApiTokenService:
             html = build_api_token_approved_email_html(token.expires_at)
             await send_email(req.email, "Token de API gerado com sucesso", html)
         except EmailError:
-            pass
+            logger.error(f"Failed to send approval email to {req.email}")
 
         await self.audit.insert(
             table=AuditLog,
@@ -213,6 +218,7 @@ class ApiTokenService:
         admin_id: UUID,
         reason: str,
     ) -> ApiTokenRequest:
+        logger.info(f"Rejecting token request {request_id} by admin {admin_id}")
         req = await self.requests.get(request_id)
         if not req:
             raise ValueError("Solicitação não encontrada.")
@@ -238,6 +244,7 @@ class ApiTokenService:
             )
             email_sent = True
         except EmailError:
+            logger.error(f"Failed to send rejection email to {req.email}")
             email_sent = False
 
         await self.audit.insert(
@@ -260,6 +267,7 @@ class ApiTokenService:
         admin_id: UUID,
         reason: Optional[str],
     ) -> ApiToken:
+        logger.info(f"Revoking token {token_id} by admin {admin_id}")
         token = await self.tokens.get(token_id)
         if not token:
             raise ValueError("Token não encontrado.")
@@ -277,7 +285,7 @@ class ApiTokenService:
                 html_body=html,
             )
         except EmailError:
-            pass
+            logger.error(f"Failed to send revocation email to {token.user.email}")
 
         await self.audit.insert(
             table=AuditLog,
@@ -293,6 +301,7 @@ class ApiTokenService:
         return token
 
     async def revoke_active_token_for_user(self, *, user_id: UUID) -> ApiToken:
+        logger.info(f"User {user_id} requesting active token revocation")
         token = await self.tokens.get_active_by_user(user_id)
         if not token:
             raise ValueError("Nenhum token ativo para revogar.")
@@ -320,6 +329,7 @@ class ApiTokenService:
         token_id: UUID,
         reason: Optional[str],
     ) -> ApiToken:
+        logger.info(f"User {user_id} revoking specific token {token_id}")
         token = await self.tokens.get(token_id)
         if not token or token.user_id != user_id or token.status != ApiTokenStatus.active:
             raise ValueError("Token não encontrado ou inválido.")
@@ -342,6 +352,7 @@ class ApiTokenService:
         return token
 
     async def reveal_user_token(self, *, user_id: UUID) -> Tuple[ApiToken, str]:
+        logger.info(f"User {user_id} requesting token reveal")
         token = await self.tokens.get_active_by_user(user_id)
         if not token:
             raise ValueError("Nenhum token ativo encontrado.")
@@ -353,6 +364,7 @@ class ApiTokenService:
             raise ValueError("Token expirado.")
 
         if token.revealed_at is not None or not token.encrypted_token:
+            logger.warning(f"Token reveal denied: Already revealed for user {user_id}")
             raise ValueError("Este token já foi revelado. Gere um novo.")
 
         plain = self._decrypt_token(token.encrypted_token)
@@ -379,6 +391,8 @@ class ApiTokenService:
         
         if not tokens:
             return 0
+        
+        logger.info(f"Expiring {len(tokens)} overdue tokens")
 
         for token in tokens:
             token.status = ApiTokenStatus.expired
@@ -420,6 +434,7 @@ class ApiTokenService:
             expires_at=expires_at,
             encrypted_token=encrypted,
         )
+        logger.info(f"Generated new token for user {user_id}, prefix: {token_prefix}")
         return plain, token
 
     async def validate_token(self, token_plain: str) -> ApiToken:
@@ -431,6 +446,7 @@ class ApiTokenService:
         if token.expires_at < datetime.now(timezone.utc):
             token.status = ApiTokenStatus.expired
             await self.session.commit()
+            logger.info(f"Token validation failed: expired. Prefix: {token.token_prefix}")
             raise ValueError("Token expirado.")
 
         token.last_used_at = datetime.now(timezone.utc)

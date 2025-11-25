@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ip_hash_from_request
 from app.core.config import settings
-from app.core.constants import GENERIC_ANALYSIS_ERROR, ALLOWED_MIMES, SIGHTENGINE_API_URL
+from app.core.constants import GENERIC_ANALYSIS_ERROR, SIGHTENGINE_API_URL, ALLOWED_MIMES
 from app.domain.ai_model import AIResponse
 from app.domain.analysis_model import Analysis
 from app.domain.audit_model import AuditLog
@@ -26,7 +26,7 @@ from app.services.ai_service import AIService
 from app.services.common import resolve_user_id
 from app.services.utils.quota_utils import check_daily_limit
 
-logger = logging.getLogger("veracity.image_analysis")
+logger = logging.getLogger("veracity.image_analysis_service")
 
 
 def _detect_mime(data: bytes) -> str | None:
@@ -84,6 +84,7 @@ class ImageAnalysisService:
         self.analysis_repo = AnalysisRepository(session)
 
     async def _sightengine_check(self, img_bytes: bytes, filename: str) -> Dict[str, Any]:
+        logger.debug(f"Calling Sightengine for file: {filename}")
         models = (
             "properties,type,quality,deepfake,"
             "faces,scam,text-content,face-attributes,text,genai"
@@ -102,25 +103,23 @@ class ImageAnalysisService:
                     files=files,
                 )
             except httpx.HTTPError as exc:
-                logger.error(
-                    "sightengine.request_error",
-                    extra={"error_type": type(exc).__name__},
-                )
+                logger.error(f"Sightengine HTTP error: {type(exc).__name__}")
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
+            
             if r.status_code >= 400:
-                logger.error(
-                    "sightengine.status_error",
-                    extra={"status": r.status_code},
-                )
+                logger.error(f"Sightengine returned error status: {r.status_code}")
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
             try:
                 payload = r.json()
             except ValueError:
-                logger.error("sightengine.json_error")
+                logger.error("Sightengine returned invalid JSON")
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
+            
             if isinstance(payload, dict) and payload.get("status") == "failure":
-                logger.error("sightengine.api_error")
+                error_detail = payload.get("error", {}).get("message", "unknown")
+                logger.error(f"Sightengine API failure: {error_detail}")
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
+            
             return payload
 
     async def run_analysis(self, user_id: UUID, file_content: bytes, request: Request):
@@ -146,6 +145,7 @@ class ImageAnalysisService:
         original_filename: Optional[str] = None, 
     ):
         if file_count > 1:
+            logger.warning(f"Batch upload attempt rejected. UserID: {user_id}, Count: {file_count}")
             raise ValueError(
                 "Envio em lote não suportado. Envie um arquivo por vez."
             )
@@ -167,7 +167,6 @@ class ImageAnalysisService:
             api_token_id=str(token_id) if token_id else None,
         )
 
-
     async def analyze(
         self,
         *,
@@ -178,11 +177,14 @@ class ImageAnalysisService:
         user_id: Optional[str],
         api_token_id: Optional[str] = None,
     ):
+        logger.info(f"Initiating Image Analysis. UserID: {user_id}, TokenID: {api_token_id}, Size: {len(upload_bytes)} bytes")
+        
         if not upload_bytes:
             raise ValueError("Arquivo vazio ou inválido.")
         if len(upload_bytes) > 1_000_000:
             raise ValueError("A imagem deve ter no máximo 1MB.")
-        if content_type not in {"image/png", "image/jpeg", "image/jpg"}:
+        if content_type not in ALLOWED_MIMES:
+            logger.info(f"Invalid MIME type received: {content_type}")
             raise ValueError("Formato inválido. Aceitos: png, jpeg ou jpg")
         
         if request:
@@ -263,10 +265,7 @@ class ImageAnalysisService:
                 },
             )
             await self.session.commit()
-            logger.error(
-                "analysis.image.external_error",
-                extra={"analysis_id": str(analysis.id), "error_type": type(exc).__name__},
-            )
+            logger.error(f"External service error during image analysis ID: {analysis.id}. Error: {type(exc).__name__}")
             raise ValueError(GENERIC_ANALYSIS_ERROR)
         except Exception as exc:
             analysis.status = AnalysisStatus.error
@@ -285,10 +284,7 @@ class ImageAnalysisService:
                 },
             )
             await self.session.commit()
-            logger.error(
-                "analysis.image.unexpected_error",
-                extra={"analysis_id": str(analysis.id), "error_type": type(exc).__name__},
-            )
+            logger.exception(f"Unexpected error during image analysis ID: {analysis.id}")
             raise ValueError(GENERIC_ANALYSIS_ERROR)
 
         explanation = (ai_text.get("explanation") or "").strip()
@@ -355,9 +351,6 @@ class ImageAnalysisService:
         }
         ai_json_std["label"] = label_enum.value
 
-        logger.info(
-            "analysis.image.done",
-            extra={"analysis_id": str(analysis.id), "label": analysis.label.value},
-        )
+        logger.info(f"Image analysis finished. ID: {analysis.id}, Label: {label_enum.value}, AI Score: {ai_generated}")
 
         return analysis, img_row, ai_json_std

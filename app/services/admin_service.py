@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from math import ceil
 from typing import Any, Dict, Optional
@@ -11,6 +12,8 @@ from app.repositories.admin_repository import AdminRepository
 from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.contact_repository import ContactRepository
 
+logger = logging.getLogger("veracity.admin_service")
+
 
 class AdminDashboardService:
     def __init__(self, session: AsyncSession) -> None:
@@ -20,6 +23,7 @@ class AdminDashboardService:
         self._contact_repo = ContactRepository(session)
 
     async def get_monthly_metrics(self, year: int, month: int) -> Dict[str, Any]:
+        logger.info(f"Fetching monthly metrics for {year}-{month}")
         analysis_raw = await self._analysis_repo.monthly_metrics(year=year, month=month)
         user_status = await self._admin_repo.user_status_metrics(year=year, month=month)
         token_data = await self._admin_repo.token_metrics(year=year, month=month)
@@ -117,7 +121,7 @@ class AdminDashboardService:
         page: int,
         page_size: int,
     ) -> Dict[str, Any]:
-
+        logger.info(f"Listing unified requests. Status: {status}, Category: {category}, Page: {page}")
         status_enum = None
         if status:
             try:
@@ -163,6 +167,7 @@ class AdminDashboardService:
         }
 
     async def get_unified_request_detail(self, request_id: UUID) -> Optional[Any]:
+        logger.debug(f"Fetching unified detail for request {request_id}")
         detail = await self._admin_repo.get_unified_detail(request_id)
         if not detail:
             return None
@@ -178,6 +183,7 @@ class AdminDashboardService:
                 status_str = str(status_value)
 
             if user_email and "deleted.local" in user_email and status_str == "open":
+                logger.info(f"Auto-closing request {request_id} for deleted user.")
                 now = datetime.now(timezone.utc)
                 if req_type == "contact":
                     closed = await self._admin_repo.close_contact_request_for_deleted_user(
@@ -201,6 +207,7 @@ class AdminDashboardService:
         return detail
 
     async def close_contact_request_for_deleted_user(self, request_id: UUID) -> bool:
+        logger.info(f"Manually closing contact request {request_id} for deleted user")
         now = datetime.now(timezone.utc)
         closed = await self._admin_repo.close_contact_request_for_deleted_user(
             request_id=request_id,
@@ -211,6 +218,7 @@ class AdminDashboardService:
         return closed
 
     async def close_token_request_for_deleted_user(self, request_id: UUID) -> bool:
+        logger.info(f"Manually closing token request {request_id} for deleted user")
         now = datetime.now(timezone.utc)
         closed = await self._admin_repo.close_token_request_for_deleted_user(
             request_id=request_id,

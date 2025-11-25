@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import html
+import logging
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,8 @@ from app.services.utils.email_utils import (
     email_change_email_html,
 )
 from app.core.constants import CODE_RE, EMAIL_RE
+
+logger = logging.getLogger("veracity.user_service")
 
 
 class UserService:
@@ -242,6 +245,7 @@ class UserService:
             raise ValueError("E-mail já está em uso.")
 
     async def register_user(self, name: str, email: str, password: str, request: Request) -> User:
+        logger.info(f"Registering new user: {email}")
         name = (name or "").strip()
         if len(name) < 3 or len(name) > 30:
             raise ValueError("Nome deve ter entre 3 e 30 caracteres.")
@@ -266,6 +270,7 @@ class UserService:
         return user
 
     async def authenticate_user(self, email: str, password: str, request: Request) -> User:
+        logger.info(f"Authenticating user: {email}")
         email = self._normalize_email(email)
         user = await self.users.get_by_email(email)
         if not user:
@@ -293,10 +298,12 @@ class UserService:
         new_password: str,
         request: Request,
     ) -> None:
+        logger.info(f"Changing password for user: {user_id}")
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
         if not self._verify_password(current_password, user.password_hash):
+            logger.warning(f"Change password failed for user {user_id}: incorrect current password")
             raise ValueError("Senha atual incorreta.")
         self._validate_password(new_password)
         user.password_hash = self._hash_password(new_password)
@@ -312,6 +319,7 @@ class UserService:
         await self.session.commit()
 
     async def update_name(self, user_id: str, new_name: str) -> str:
+        logger.info(f"Updating name for user: {user_id}")
         name = (new_name or "").strip()
         if len(name) < 3 or len(name) > 30:
             raise ValueError("Nome deve ter entre 3 e 30 caracteres.")
@@ -334,6 +342,7 @@ class UserService:
         return user.name
 
     async def update_email(self, user_id: str, new_email: str) -> str:
+        logger.info(f"Updating email for user: {user_id}")
         email = self._normalize_email(new_email)
         user = await self.users.get_by_id(user_id)
         if not user:
@@ -466,6 +475,7 @@ class UserService:
         raw_email: str,
         request: Request,
     ) -> None:
+        logger.info(f"User {user_id} requesting email change")
         email = await self._normalize_and_validate_new_email_for_change(user_id, raw_email)
         user = await self.users.get_by_id(user_id)
         if not user:
@@ -492,6 +502,7 @@ class UserService:
         code: str,
         request: Request,
     ) -> None:
+        logger.info(f"User {user_id} confirming email change")
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
@@ -543,6 +554,7 @@ class UserService:
         await self._normalize_and_validate_new_email_for_change(user_id, raw_email)
 
     async def inactivate_account(self, user_id: str) -> None:
+        logger.info(f"Inactivating account for user: {user_id}")
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
@@ -604,7 +616,7 @@ class UserService:
             req.rejection_reason = message
             req.decided_at = closed_at
             req.decided_by_admin_id = None
-
+            
     async def inactivate_account(self, user_id: str) -> None:
         user = await self.users.get_by_id(user_id)
         if not user:
@@ -626,6 +638,7 @@ class UserService:
         await self.session.commit()
 
     async def delete_account(self, user_id: str) -> None:
+        logger.warning(f"Deleting account for user: {user_id}")
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")

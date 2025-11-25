@@ -160,16 +160,18 @@ async def _hf_chat(
         "max_tokens": max_tokens,
     }
     t0 = time.perf_counter()
-    r = await client.post(
-        url, json=body, headers=headers, timeout=settings.http_timeout
-    )
-    logger.info(
-        "hf.response",
-        extra={
-            "status": r.status_code,
-            "ms": round((time.perf_counter() - t0) * 1000, 1),
-        },
-    )
+    logger.debug("Sending request to HF Inference API")
+    try:
+        r = await client.post(
+            url, json=body, headers=headers, timeout=settings.http_timeout
+        )
+    except httpx.HTTPError as e:
+        logger.error(f"HF API connection error: {str(e)}")
+        raise
+
+    duration = round((time.perf_counter() - t0) * 1000, 1)
+    logger.info(f"HF API response received. Status: {r.status_code}, Duration: {duration}ms")
+    
     r.raise_for_status()
 
     jr = r.json()
@@ -193,6 +195,7 @@ class AIService:
         dns_ok: bool,
         gsb_json: Dict[str, Any],
     ) -> Dict[str, Any]:
+        logger.info(f"Generating AI analysis for URL: {url}")
         client = self.client or httpx.AsyncClient(timeout=settings.http_timeout)
         close_client = self.client is None
 
@@ -208,7 +211,7 @@ class AIService:
                     max_tokens=360,
                 )
             except Exception as exc:
-                logger.exception("hf.chat.url.error")
+                logger.exception("Failed to query HF API for URL analysis")
                 raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
 
             if not isinstance(out, dict):
@@ -277,6 +280,7 @@ class AIService:
         mime: str,
         detection_json: Dict[str, Any],
     ) -> Dict[str, Any]:
+        logger.info(f"Generating AI analysis for Image: {filename}")
         se_full = detection_json or {}
         client = self.client or httpx.AsyncClient(timeout=settings.http_timeout)
         close_client = self.client is None
@@ -292,7 +296,7 @@ class AIService:
                     max_tokens=480,
                 )
             except Exception as exc:
-                logger.exception("hf.chat.image.error")
+                logger.exception("Failed to query HF API for Image analysis")
                 raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
 
             if not isinstance(out, dict) or not all(
