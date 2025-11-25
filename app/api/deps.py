@@ -1,5 +1,6 @@
 from hashlib import sha256
 from typing import Any
+import hashlib
 
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
@@ -46,6 +47,14 @@ def _decode_token(token: str) -> str | None:
     if not isinstance(uid, str):
         return None
     return uid
+
+def get_actor_identifier(request: Request) -> str | None:
+    if not request:
+        return None
+    ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "")
+    raw = f"{ip}|{user_agent}"
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 async def get_current_user(

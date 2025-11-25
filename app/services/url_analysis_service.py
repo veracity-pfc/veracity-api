@@ -13,7 +13,7 @@ import httpx
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import ip_hash_from_request
+from app.api.deps import get_actor_identifier
 from app.core.config import settings
 from app.core.constants import DNS_TIMEOUT, GENERIC_ANALYSIS_ERROR, GSB_API_URL
 from app.domain.ai_model import AIResponse
@@ -54,7 +54,6 @@ def map_pt_label_to_enum(s: str) -> RiskLabel:
     if s.startswith("malic"):
         return RiskLabel.malicious
     return RiskLabel.unknown
-
 
 async def gsb_check(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
     body = {
@@ -138,7 +137,7 @@ class UrlAnalysisService:
             logger.warning(f"Invalid TLD detected for URL: {url}")
             raise ValueError("A URL deve possuir um TLD válido")
 
-        actor_hash = ip_hash_from_request(request) if request else None
+        actor_hash = get_actor_identifier(request) if request else None
         resolved_user_id = resolve_user_id(request, user_id) if request else user_id
 
         used_today, limit, scope = await check_daily_limit(

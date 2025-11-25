@@ -12,7 +12,7 @@ import httpx
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import ip_hash_from_request
+from app.api.deps import get_actor_identifier
 from app.core.config import settings
 from app.core.constants import GENERIC_ANALYSIS_ERROR, SIGHTENGINE_API_URL, ALLOWED_MIMES
 from app.domain.ai_model import AIResponse
@@ -188,7 +188,7 @@ class ImageAnalysisService:
             raise ValueError("Formato inválido. Aceitos: png, jpeg ou jpg")
         
         if request:
-            actor_hash = ip_hash_from_request(request)
+            actor_hash = get_actor_identifier(request)
             resolved_user_id = resolve_user_id(request, user_id)
         else:
             actor_hash = None
