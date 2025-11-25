@@ -22,7 +22,6 @@ from app.domain.contact_request_model import ContactRequest
 from app.domain.api_token_request_model import ApiTokenRequest
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.user_repository import UserRepository
-from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.api_token_repository import ApiTokenRepository
 from app.services.utils.email_utils import (
     send_email,
@@ -77,6 +76,67 @@ class UserService:
         status_value = getattr(db_user, "status", None)
         if hasattr(status_value, "value"):
             status_value = status_value.value
+
+        is_admin = str(role_value).lower() == "admin"
+
+        if is_admin:
+            stmt_doubts = select(
+                func.count(ContactRequest.id),
+                ContactRequest.status,
+            ).where(
+                ContactRequest.category == "doubt"
+            ).group_by(ContactRequest.status)
+
+            stmt_suggestions = select(
+                func.count(ContactRequest.id),
+                ContactRequest.status,
+            ).where(
+                ContactRequest.category == "suggestion"
+            ).group_by(ContactRequest.status)
+
+            stmt_complaints = select(
+                func.count(ContactRequest.id),
+                ContactRequest.status,
+            ).where(
+                ContactRequest.category == "complaint"
+            ).group_by(ContactRequest.status)
+
+            stmt_tokens = select(
+                func.count(ApiTokenRequest.id),
+                ApiTokenRequest.status,
+            ).group_by(ApiTokenRequest.status)
+
+            res_doubts = (await self.session.execute(stmt_doubts)).all()
+            res_suggestions = (await self.session.execute(stmt_suggestions)).all()
+            res_complaints = (await self.session.execute(stmt_complaints)).all()
+            res_tokens = (await self.session.execute(stmt_tokens)).all()
+
+            def build_counts(rows):
+                responded = 0
+                rejected = 0
+                for total, st in rows:
+                    val = st.value if hasattr(st, "value") else str(st)
+                    if val in ("finished", "approved"):
+                        responded += int(total)
+                    if val in ("rejected",):
+                        rejected += int(total)
+                return {"responded": responded, "rejected": rejected}
+
+            admin_stats = {
+                "doubt": build_counts(res_doubts),
+                "suggestion": build_counts(res_suggestions),
+                "complaint": build_counts(res_complaints),
+                "token_request": build_counts(res_tokens),
+            }
+
+            return {
+                "id": str(db_user.id),
+                "name": db_user.name,
+                "email": db_user.email,
+                "role": role_value,
+                "status": status_value,
+                "admin_stats": admin_stats,
+            }
 
         user_key = str(db_user.id)
 
