@@ -219,36 +219,19 @@ class AIService:
                 raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
 
             if not isinstance(out, dict):
-                out = {}
+                logger.error(f"AI returned invalid type: {type(out)}")
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
 
             classification = str(out.get("classification", "")).strip()
             explanation = str(out.get("explanation", "")).strip()
             recs = out.get("recommendations")
 
-            if not classification:
-                classification = "Suspeito" if sig.is_hosting_provider else "Desconhecido"
-
-            if not explanation:
-                if sig.is_hosting_provider:
-                    explanation = (
-                        "Esta URL está hospedada em um provedor genérico de aplicações, e "
-                        "empresas e instituições legítimas normalmente utilizam domínios próprios "
-                        "para seus sites oficiais."
-                    )
-                else:
-                    explanation = (
-                        "Não foi possível interpretar completamente os sinais técnicos desta URL, "
-                        "então é recomendável manter cautela ao acessá-la."
-                    )
+            if not classification or not explanation:
+                logger.error(f"AI returned incomplete data. Class: '{classification}', Exp len: {len(explanation)}")
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
 
             if not isinstance(recs, list):
                 recs = []
-
-            if not recs:
-                recs = [
-                    "Evite informar senhas ou dados pessoais antes de confirmar se o endereço é realmente oficial.",
-                    "Quando estiver em dúvida, digite o endereço do site diretamente no navegador em vez de clicar em links recebidos por mensagens.",
-                ]
 
             out = {
                 "classification": classification,
@@ -257,19 +240,9 @@ class AIService:
             }
 
             if sig.is_hosting_provider:
-                current_cls = str(out.get("classification", "")).strip()
+                current_cls = out["classification"]
                 if not current_cls or current_cls.lower().startswith("segur"):
                     out["classification"] = "Suspeito"
-                reason = (
-                    "Esta URL está hospedada em um provedor genérico de aplicações, e "
-                    "empresas e instituições legítimas normalmente utilizam domínios próprios "
-                    "para seus sites oficiais."
-                )
-                current_exp = str(out.get("explanation") or "").strip()
-                if current_exp:
-                    out["explanation"] = f"{reason} {current_exp}"
-                else:
-                    out["explanation"] = reason
 
             out["explanation"] = " ".join(str(out.get("explanation", "")).split())
             return out
@@ -314,7 +287,12 @@ class AIService:
                 logger.error(f"HF Analysis missing keys. Missing: {missing_keys}. Got keys: {list(out.keys())}")
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
 
-            out["explanation"] = " ".join(str(out.get("explanation", "")).split())
+            explanation = str(out.get("explanation", "")).strip()
+            if not explanation:
+                logger.error("HF Analysis returned empty explanation")
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
+
+            out["explanation"] = " ".join(explanation.split())
 
             recs = out.get("recommendations") or []
             if isinstance(recs, list):
