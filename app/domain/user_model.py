@@ -52,3 +52,11 @@ class User(Base):
         onupdate=func.now(),
         nullable=True,
     )
+    failed_login_attempts: Mapped[int] = mapped_column(
+        default=0,
+        nullable=False,
+    )
+    locked_until: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+    )

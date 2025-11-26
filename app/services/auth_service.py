@@ -102,7 +102,27 @@ class AuthService:
                 "A conta vinculada ao e-mail informado está inativa. Reative a conta para poder acessar a plataforma."
             )
 
+        if user.locked_until and user.locked_until > datetime.now(timezone.utc):
+            logger.warning(f"Login failed: Account locked for email {email}")
+            await self.audit_repo.insert(
+                AuditLog,
+                user_id=user.id,
+                actor_ip_hash=ip_hash_from_request(request),
+                action="auth.login",
+                resource="/auth/login",
+                success=False,
+                details={"email": email, "reason": "account_locked"},
+            )
+            raise ValueError("Conta bloqueada temporariamente. Tente novamente em 3 minutos.")
+
         if not self._verify_password(password, user.password_hash):
+            user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+            if user.failed_login_attempts >= 3:
+                user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=3)
+            
+            await self.user_repo.update(user)
+            await self.session.commit()
+
             logger.warning(f"Login failed: Invalid password for email {email}")
             await self.audit_repo.insert(
                 AuditLog,
@@ -114,6 +134,12 @@ class AuthService:
                 details={"email": email, "reason": "credentials_invalid"},
             )
             raise ValueError("Credenciais inválidas.")
+
+        if (user.failed_login_attempts or 0) > 0 or user.locked_until:
+            user.failed_login_attempts = 0
+            user.locked_until = None
+            await self.user_repo.update(user)
+            await self.session.commit()
 
         token = self._create_token(user)
         logger.info(f"Login successful for user ID: {user.id}")
