@@ -138,9 +138,14 @@ def _build_image_prompt_full(filename: str, mime: str, se_full: Dict[str, Any]) 
         "- Se houver texto sensível/ofensivo no JSON, mencione de forma simples.\n"
         "- Traga 2 a 4 recomendações práticas, curtas, no imperativo.\n"
         "- Português do Brasil.\n\n"
-        "Formato de saída (obrigatório): responda ESTRITAMENTE em JSON válido com as chaves:\n"
-        '{ "explanation": "texto claro para leigos (3–5 frases)", '
-        '"recommendations": ["recomendação 1", "recomendação 2"] }\n"'
+        "REGRAS IMPORTANTES DE SAÍDA:\n"
+        "1. Retorne APENAS um objeto JSON válido.\n"
+        "2. NÃO inclua campos como 'reasoning', 'thought' ou 'chain_of_thought'.\n"
+        "3. NÃO use formatação markdown (como ```json).\n"
+        "4. O JSON deve ter exatamente estas chaves: 'explanation', 'recommendations', 'classification'.\n"
+        "5. A classificação deve ser uma destas: 'Seguro', 'Suspeito', 'Falso'.\n"
+        "6. A explicação deve ser em Português, concisa e justificar a pontuação.\n"
+        "7. 'recommendations' deve ser uma lista de strings em Português com dicas de segurança.\n"
     )
 
 
@@ -149,7 +154,7 @@ async def _hf_chat(
     prompt: str,
     *,
     temperature: float = 0.18,
-    max_tokens: int = 360,
+    max_tokens: int = 500,
 ) -> Dict[str, Any]:
     url = f"{settings.hf_base_url}/chat/completions"
     headers = {"Authorization": f"Bearer {settings.hf_token}"}
@@ -158,32 +163,58 @@ async def _hf_chat(
         "messages": [{"role": "user", "content": prompt}],
         "temperature": temperature,
         "max_tokens": max_tokens,
+        "stream": False
     }
     t0 = time.perf_counter()
     logger.debug("Sending request to HF Inference API")
     try:
         r = await client.post(
-            url, json=body, headers=headers, timeout=settings.http_timeout
+            url, json=body, headers=headers, timeout=40.0 
         )
-    except httpx.HTTPError as e:
-        logger.error(f"HF API connection error: {str(e)}")
-        raise
+        duration = round((time.perf_counter() - t0) * 1000, 1)
+        
+        raw_response = r.text
+        logger.info(f"HF API response. Status: {r.status_code}, Duration: {duration}ms. Raw Body Snippet: {raw_response[:700]}")
 
-    duration = round((time.perf_counter() - t0) * 1000, 1)
-    logger.info(f"HF API response received. Status: {r.status_code}, Duration: {duration}ms")
-    
-    r.raise_for_status()
+        if r.status_code >= 400:
+            logger.error(f"HF API Error Body: {raw_response}")
+            r.raise_for_status()
 
-    jr = r.json()
-    txt = jr.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-    s, e = txt.find("{"), txt.rfind("}")
-    content = txt[s : e + 1] if s != -1 and e != -1 else "{}"
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError as e:
-        logger.error(f"HF API JSON Decode Error. Raw Text fragment: {txt[:500]!r}. Error: {e}")
-        raise ValueError("Invalid JSON format from AI Service") from e
+        try:
+            jr = r.json()
+        except json.JSONDecodeError:
+            logger.error(f"HF returned invalid JSON. Raw body: {raw_response}")
+            return {}
 
+        choices = jr.get("choices", [])
+        if not choices:
+            logger.error(f"HF response has no 'choices'. Full JSON: {jr}")
+            return {}
+            
+        message_content = choices[0].get("message", {}).get("content", "")
+        if not message_content:
+            logger.error(f"HF message content is empty. Full JSON: {jr}")
+            return {}
+
+        logger.debug(f"AI Content extracted: {message_content[:200]}...")
+
+        s = message_content.find("{")
+        e = message_content.rfind("}")
+        
+        if s != -1 and e != -1:
+            json_str = message_content[s : e + 1]
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError as je:
+                logger.error(f"Failed to parse inner JSON from AI content. Error: {je}. Content: {json_str}")
+                return {}
+        else:
+            logger.warning(f"No JSON brackets found in AI response. Content: {message_content}")
+            return {}
+
+    except httpx.HTTPError as exc:
+        logger.error(f"HF HTTP connection error: {type(exc).__name__} - {str(exc)}")
+        raise ValueError("AI_SERVICE_UNAVAILABLE")
 
 class AIService:
     __slots__ = ("client",)
@@ -212,7 +243,7 @@ class AIService:
                     client,
                     prompt,
                     temperature=0.16,
-                    max_tokens=360,
+                    max_tokens=500,
                 )
             except Exception as exc:
                 logger.exception("Failed to query HF API for URL analysis")
@@ -270,7 +301,7 @@ class AIService:
                     client,
                     prompt,
                     temperature=0.16,
-                    max_tokens=480,
+                    max_tokens=500,
                 )
             except Exception as exc:
                 logger.exception("Failed to query HF API for Image analysis")
