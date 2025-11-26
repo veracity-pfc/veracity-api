@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import html
 import logging
 import secrets
 import time
@@ -29,7 +28,12 @@ from app.services.utils.email_utils import (
     reactivate_account_email_html,
     email_change_email_html,
 )
-from app.core.constants import CODE_RE, EMAIL_RE
+from app.services.utils.validation_utils import (
+    normalize_email,
+    validate_name_format,
+    validate_password_complexity,
+)
+from app.core.constants import CODE_RE
 
 logger = logging.getLogger("veracity.user_service")
 
@@ -218,27 +222,6 @@ class UserService:
         ).hex()
         return hmac.compare_digest(check_hash, hashed)
 
-    def _normalize_email(self, email: str) -> str:
-        email = html.unescape(email or "").strip().lower()
-        if not EMAIL_RE.fullmatch(email):
-            raise ValueError("E-mail inválido.")
-        return email
-
-    def _validate_password(self, password: str) -> None:
-        if len(password) < 8:
-            raise ValueError("Senha deve ter pelo menos 8 caracteres.")
-        if not any(c.islower() for c in password):
-            raise ValueError("Senha deve conter pelo menos uma letra minúscula.")
-        if not any(c.isupper() for c in password):
-            raise ValueError("Senha deve conter pelo menos uma letra maiúscula.")
-        if not any(c.isdigit() for c in password):
-            raise ValueError("Senha deve conter pelo menos um dígito numérico.")
-        special = "!@#$%^&*()-_=+[]{};:,.<>/?"
-        if not any(c in special for c in password):
-            raise ValueError(
-                "Senha deve conter pelo menos um caractere especial: " + special
-            )
-
     async def _ensure_unique_email(self, email: str) -> None:
         existing = await self.users.get_by_email(email)
         if existing:
@@ -246,13 +229,11 @@ class UserService:
 
     async def register_user(self, name: str, email: str, password: str, request: Request) -> User:
         logger.info(f"Registering new user: {email}")
-        name = (name or "").strip()
-        if len(name) < 3 or len(name) > 30:
-            raise ValueError("Nome deve ter entre 3 e 30 caracteres.")
-
-        email = self._normalize_email(email)
+        
+        name = validate_name_format(name)
+        email = normalize_email(email)
         await self._ensure_unique_email(email)
-        self._validate_password(password)
+        validate_password_complexity(password)
 
         hashed = self._hash_password(password)
         user = await self.users.create_user(name=name, email=email, password_hash=hashed)
@@ -271,7 +252,7 @@ class UserService:
 
     async def authenticate_user(self, email: str, password: str, request: Request) -> User:
         logger.info(f"Authenticating user: {email}")
-        email = self._normalize_email(email)
+        email = normalize_email(email)
         user = await self.users.get_by_email(email)
         if not user:
             raise ValueError("Credenciais inválidas.")
@@ -305,7 +286,8 @@ class UserService:
         if not self._verify_password(current_password, user.password_hash):
             logger.warning(f"Change password failed for user {user_id}: incorrect current password")
             raise ValueError("Senha atual incorreta.")
-        self._validate_password(new_password)
+        
+        validate_password_complexity(new_password)
         user.password_hash = self._hash_password(new_password)
         await self.users.update(user)
         await self.audit_repo.insert(
@@ -320,9 +302,7 @@ class UserService:
 
     async def update_name(self, user_id: str, new_name: str) -> str:
         logger.info(f"Updating name for user: {user_id}")
-        name = (new_name or "").strip()
-        if len(name) < 3 or len(name) > 30:
-            raise ValueError("Nome deve ter entre 3 e 30 caracteres.")
+        name = validate_name_format(new_name)
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
@@ -343,7 +323,7 @@ class UserService:
 
     async def update_email(self, user_id: str, new_email: str) -> str:
         logger.info(f"Updating email for user: {user_id}")
-        email = self._normalize_email(new_email)
+        email = normalize_email(new_email)
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
@@ -363,12 +343,8 @@ class UserService:
         await self.session.commit()
         return user.email
 
-    async def _normalize_and_validate_email(self, raw_email: str) -> str:
-        email = self._normalize_email(raw_email)
-        return email
-
     async def _normalize_and_validate_new_email_for_change(self, user_id: str, raw_email: str) -> str:
-        email = self._normalize_email(raw_email)
+        email = normalize_email(raw_email)
         existing = await self.users.get_by_email(email)
         if existing and str(existing.id) != user_id:
             raise ValueError("E-mail já está em uso por outra conta.")
@@ -405,7 +381,7 @@ class UserService:
         return False
 
     async def request_reactivation_code(self, raw_email: str, request: Request) -> None:
-        email = await self._normalize_and_validate_email(raw_email)
+        email = normalize_email(raw_email)
         user = await self.users.get_by_email(email)
         if not user:
             raise ValueError("E-mail não encontrado.")
@@ -432,7 +408,7 @@ class UserService:
         code: str,
         request: Request,
     ) -> None:
-        email = await self._normalize_and_validate_email(raw_email)
+        email = normalize_email(raw_email)
         user = await self.users.get_by_email(email)
         if not user:
             raise ValueError("E-mail não encontrado.")
@@ -542,7 +518,7 @@ class UserService:
         return getattr(user, "is_active", True)
 
     async def validate_email(self, raw_email: str) -> Tuple[str, str]:
-        email = await self._normalize_and_validate_email(raw_email)
+        email = normalize_email(raw_email)
         user = await self.users.get_by_email(email)
         if not user:
             raise ValueError("O e-mail fornecido não foi encontrado.")

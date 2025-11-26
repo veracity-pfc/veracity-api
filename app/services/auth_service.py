@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from fastapi import Request
 from jose import jwt
@@ -12,7 +11,6 @@ from passlib.hash import bcrypt
 from app.core.config import settings
 from app.domain.audit_model import AuditLog
 from app.domain.enums import UserStatus
-from app.core.constants import EMAIL_RE
 from app.domain.user_model import User
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.password_reset_repository import PasswordResetRepository
@@ -24,6 +22,8 @@ from app.services.utils.email_utils import (
     verification_email_html,
 )
 from app.api.deps import ip_hash_from_request
+from app.services.utils.validation_utils import normalize_email, validate_password_complexity
+from app.core.constants import EMAIL_RE
 
 logger = logging.getLogger("veracity.auth_service")
 
@@ -310,17 +310,7 @@ class AuthService:
         if password != confirm:
             raise ValueError("Senhas não conferem.")
 
-        if len(password) < 8:
-            raise ValueError("A nova senha deve ter pelo menos 8 caracteres.")
-
-        has_upper = any(c.isupper() for c in password)
-        has_digit = any(c.isdigit() for c in password)
-        has_symbol = any(not c.isalnum() for c in password)
-
-        if not (has_upper and has_digit and has_symbol):
-            raise ValueError(
-                "A senha deve conter pelo menos 1 letra maiúscula, 1 número e 1 símbolo."
-            )
+        validate_password_complexity(password)
 
         reset = await self.pwd_repo.get_by_id(token)
         if not reset or reset.used_at or reset.expires_at < datetime.now(timezone.utc):

@@ -7,14 +7,13 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 from uuid import UUID
 
-import filetype
 import httpx
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_actor_identifier
 from app.core.config import settings
-from app.core.constants import GENERIC_ANALYSIS_ERROR, SIGHTENGINE_API_URL, ALLOWED_MIMES
+from app.core.constants import GENERIC_ANALYSIS_ERROR, SIGHTENGINE_API_URL
 from app.domain.ai_model import AIResponse
 from app.domain.analysis_model import Analysis
 from app.domain.audit_model import AuditLog
@@ -25,13 +24,9 @@ from app.repositories.analysis_repository import AnalysisRepository
 from app.services.ai_service import AIService
 from app.services.common import resolve_user_id
 from app.services.utils.quota_utils import check_daily_limit
+from app.services.utils.validation_utils import detect_mime, validate_image_file
 
 logger = logging.getLogger("veracity.image_analysis_service")
-
-
-def _detect_mime(data: bytes) -> str | None:
-    kind = filetype.guess(data)
-    return (kind and kind.mime) or None
 
 
 def _extract_ai_generated(se: Dict[str, Any]) -> float:
@@ -123,7 +118,7 @@ class ImageAnalysisService:
             return payload
 
     async def run_analysis(self, user_id: UUID, file_content: bytes, request: Request):
-        mime = _detect_mime(file_content)
+        mime = detect_mime(file_content)
         ext = mimetypes.guess_extension(mime or "") or ".bin"
         filename = f"upload_{datetime.now().timestamp()}{ext}"
 
@@ -150,7 +145,7 @@ class ImageAnalysisService:
                 "Envio em lote não suportado. Envie um arquivo por vez."
             )
 
-        mime = _detect_mime(file_content)
+        mime = detect_mime(file_content)
         
         if original_filename:
             filename = original_filename
@@ -179,13 +174,7 @@ class ImageAnalysisService:
     ):
         logger.info(f"Initiating Image Analysis. UserID: {user_id}, TokenID: {api_token_id}, Size: {len(upload_bytes)} bytes")
         
-        if not upload_bytes:
-            raise ValueError("Arquivo vazio ou inválido.")
-        if len(upload_bytes) > 1_000_000:
-            raise ValueError("A imagem deve ter no máximo 1MB.")
-        if content_type not in ALLOWED_MIMES:
-            logger.info(f"Invalid MIME type received: {content_type}")
-            raise ValueError("Formato inválido. Aceitos: png, jpeg ou jpg")
+        validate_image_file(upload_bytes, content_type)
         
         if request:
             actor_hash = get_actor_identifier(request)

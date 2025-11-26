@@ -25,10 +25,10 @@ class ImageIn(BaseModel):
     @field_validator("size_bytes")
     @classmethod
     def check_size(cls, v: int):
-        if v > 1_000_000:
+        if v > 10_000_000:
             raise PydanticCustomError(
                 "file_too_large",
-                "A imagem deve ter no máximo 1MB."
+                "A imagem deve ter no máximo 10MB."
             )
         if v <= 0:
             raise PydanticCustomError(

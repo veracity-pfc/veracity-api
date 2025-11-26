@@ -55,7 +55,7 @@ async def analyze_url(
 @router.post("/image", response_model=ImageAnalysisOut)
 async def analyze_image(
     request: Request,
-    file: UploadFile = File(..., description="Imagem PNG/JPEG até 1MB"),
+    file: UploadFile = File(..., description="Imagem PNG/JPEG até 10MB"),
     session: AsyncSession = Depends(get_db),
     user: User | None = Depends(get_optional_user),
 ):

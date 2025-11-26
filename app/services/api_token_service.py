@@ -35,6 +35,7 @@ from app.services.utils.email_utils import (
     send_email,
 )
 from app.services.history_service import normalize_date_range
+from app.services.utils.validation_utils import normalize_email
 
 logger = logging.getLogger("veracity.api_token_service")
 
@@ -92,6 +93,9 @@ class ApiTokenService:
         request_obj,
     ) -> ApiTokenRequest:
         logger.info(f"Creating token request for user {user_id}")
+        
+        valid_email = normalize_email(email)
+
         existing_open = await self.requests.get_open_by_user(user_id)
         if existing_open:
             raise ValueError("Você já possui uma solicitação de token em aberto. Aguarde a análise.")
@@ -102,7 +106,7 @@ class ApiTokenService:
 
         req = await self.requests.create(
             user_id=user_id,
-            email=email,
+            email=valid_email,
             message=message,
             status=ApiTokenRequestStatus.open,
         )
@@ -114,7 +118,7 @@ class ApiTokenService:
             action="api_token_request.create",
             resource="/v1/contact-us",
             success=True,
-            details={"request_id": str(req.id), "email": email},
+            details={"request_id": str(req.id), "email": valid_email},
         )
         await self.session.commit()
         return req

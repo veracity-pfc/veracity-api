@@ -6,7 +6,6 @@ import logging
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
-from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
@@ -27,12 +26,9 @@ from app.schemas.url_analysis import has_valid_tld
 from app.services.ai_service import AIService
 from app.services.common import resolve_user_id
 from app.services.utils.quota_utils import check_daily_limit
+from app.services.utils.validation_utils import extract_host, validate_url_format
 
 logger = logging.getLogger("veracity.url_analysis_service")
-
-
-def only_host(url: str) -> str:
-    return (urlsplit(url).hostname or "").lower()
 
 
 async def dns_ok(host: str) -> bool:
@@ -54,6 +50,7 @@ def map_pt_label_to_enum(s: str) -> RiskLabel:
     if s.startswith("malic"):
         return RiskLabel.malicious
     return RiskLabel.unknown
+
 
 async def gsb_check(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
     body = {
@@ -125,14 +122,9 @@ class UrlAnalysisService:
         url = (url_in or "").strip()
         logger.info(f"Initiating URL analysis. UserID: {user_id}, TokenID: {api_token_id}")
 
-        if not url:
-            raise ValueError("A URL não pode estar vazia")
-        if len(url) > 200:
-            raise ValueError("A URL deve ter no máximo 200 caracteres.")
-        if not (url.startswith("http://") or url.startswith("https://")):
-            raise ValueError("A URL deve começar com http:// ou https://")
+        validate_url_format(url)
 
-        host = only_host(url)
+        host = extract_host(url)
         if not has_valid_tld(host):
             logger.warning(f"Invalid TLD detected for URL: {url}")
             raise ValueError("A URL deve possuir um TLD válido")
