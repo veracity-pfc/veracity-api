@@ -178,7 +178,11 @@ async def _hf_chat(
     txt = jr.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
     s, e = txt.find("{"), txt.rfind("}")
     content = txt[s : e + 1] if s != -1 and e != -1 else "{}"
-    return json.loads(content)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        logger.error(f"HF API JSON Decode Error. Raw Text fragment: {txt[:500]!r}. Error: {e}")
+        raise ValueError("Invalid JSON format from AI Service") from e
 
 
 class AIService:
@@ -299,9 +303,15 @@ class AIService:
                 logger.exception("Failed to query HF API for Image analysis")
                 raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
 
-            if not isinstance(out, dict) or not all(
-                k in out for k in ("explanation", "recommendations")
-            ):
+            if not isinstance(out, dict):
+                logger.error(f"HF Analysis failed: Output is not a dict. Type: {type(out)}")
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
+
+            required_keys = {"explanation", "recommendations"}
+            missing_keys = required_keys - out.keys()
+            
+            if missing_keys:
+                logger.error(f"HF Analysis missing keys. Missing: {missing_keys}. Got keys: {list(out.keys())}")
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
 
             out["explanation"] = " ".join(str(out.get("explanation", "")).split())
