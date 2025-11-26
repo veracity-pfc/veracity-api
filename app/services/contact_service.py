@@ -106,7 +106,7 @@ class ContactService:
             user_id=user_id,
             actor_ip_hash=ip_hash,
             action="contact.create",
-            resource="/contact-us",
+            resource="/contact",
             success=True,
             details={"category": category.value, "subject": subject, "email": valid_email},
         )

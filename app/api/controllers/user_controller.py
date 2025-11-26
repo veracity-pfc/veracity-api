@@ -14,7 +14,7 @@ from app.services.user_service import UserService
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/user", tags=["user"])
+router = APIRouter(prefix="/v1/users", tags=["user"])
 
 @router.get("/profile")
 async def get_profile(

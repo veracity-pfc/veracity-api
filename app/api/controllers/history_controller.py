@@ -12,7 +12,7 @@ from app.domain.user_model import User
 from app.schemas.history import HistoryDetailOut, HistoryPageOut
 from app.services.history_service import HistoryService
 
-router = APIRouter(prefix="/v1/user/history", tags=["History"])
+router = APIRouter(prefix="/v1/users/history", tags=["History"])
 
 
 @router.get("", response_model=HistoryPageOut)

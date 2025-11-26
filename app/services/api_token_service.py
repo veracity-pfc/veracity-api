@@ -116,7 +116,7 @@ class ApiTokenService:
             user_id=user_id,
             actor_ip_hash=ip_hash_from_request(request_obj),
             action="api_token_request.create",
-            resource="/v1/contact-us",
+            resource="/v1/contact",
             success=True,
             details={"request_id": str(req.id), "email": valid_email},
         )

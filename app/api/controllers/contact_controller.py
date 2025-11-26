@@ -14,7 +14,7 @@ from app.services.api_token_service import ApiTokenService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/contact-us", tags=["contact-us"])
+router = APIRouter(prefix="/v1/contact", tags=["contact"])
 
 
 @router.post("", response_model=ContactOkOut)
