@@ -139,6 +139,12 @@ class AnalysisRepository:
                 ) AS url_suspicious,
                 COUNT(*) FILTER (
                     WHERE a.analysis_type = 'url'
+                      AND a.label = 'malicious'
+                      AND a.created_at >= mr.start_dt
+                      AND a.created_at <  mr.end_dt
+                ) AS url_malicious,
+                COUNT(*) FILTER (
+                    WHERE a.analysis_type = 'url'
                       AND a.label = 'safe'
                       AND a.created_at >= mr.start_dt
                       AND a.created_at <  mr.end_dt
@@ -168,6 +174,7 @@ class AnalysisRepository:
         row = res.first() or (0, 0, 0, 0, 0)
 
         url_suspicious = int(row[0] or 0)
+        url_malicious = int(row[0] or 0)
         url_safe = int(row[1] or 0)
         image_fake = int(row[2] or 0)
         image_safe = int(row[3] or 0)
@@ -175,6 +182,7 @@ class AnalysisRepository:
 
         return {
             "bars": {
+                "url_malicious": url_malicious,
                 "url_suspicious": url_suspicious,
                 "url_safe": url_safe,
                 "image_fake": image_fake,
@@ -182,7 +190,7 @@ class AnalysisRepository:
             },
             "totals": {
                 "total_month": total_month,
-                "urls_month": url_suspicious + url_safe,
+                "urls_month": url_malicious + url_suspicious + url_safe,
                 "images_month": image_fake + image_safe,
             },
         }
