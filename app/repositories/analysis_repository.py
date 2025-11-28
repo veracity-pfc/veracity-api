@@ -174,11 +174,11 @@ class AnalysisRepository:
         row = res.first() or (0, 0, 0, 0, 0)
 
         url_suspicious = int(row[0] or 0)
-        url_malicious = int(row[0] or 0)
-        url_safe = int(row[1] or 0)
-        image_fake = int(row[2] or 0)
-        image_safe = int(row[3] or 0)
-        total_month = int(row[4] or 0)
+        url_malicious = int(row[1] or 0)
+        url_safe = int(row[2] or 0)
+        image_fake = int(row[3] or 0)
+        image_safe = int(row[4] or 0)
+        total_month = int(row[5] or 0)
 
         return {
             "bars": {
