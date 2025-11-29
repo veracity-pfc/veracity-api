@@ -8,7 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_db, require_admin
+from app.api.deps import get_db, require_admin
 from app.domain.enums import ApiTokenRequestStatus, ApiTokenStatus
 from app.domain.user_model import User
 from app.schemas.api_token import ApiTokenListItem, ApiTokenPageOut, ApiTokenRead
@@ -32,7 +32,7 @@ router = APIRouter(prefix="/v1/administration", tags=["admin"])
 
 @router.get("/metrics/month")
 async def metrics_month(
-    _: str = Depends(require_admin),
+    admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
     year: int | None = Query(default=None, description="Ano (YYYY)"),
     month: int | None = Query(default=None, description="Mês (1-12)"),
@@ -53,7 +53,7 @@ async def list_unified_requests(
     date_to: Optional[datetime] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
-    _: User = Depends(get_current_user),
+    admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
     tz = ZoneInfo("America/Sao_Paulo")
@@ -95,7 +95,7 @@ async def list_unified_requests(
 @router.get("/contact-requests/{request_id}", response_model=UnifiedRequestDetail)
 async def get_unified_request_detail(
     request_id: UUID,
-    _: User = Depends(get_current_user),
+    admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
     service = AdminDashboardService(session)
@@ -112,7 +112,7 @@ async def get_unified_request_detail(
 async def reply_contact_request(
     request_id: UUID,
     body: ContactRequestReplyBody,
-    admin: User = Depends(get_current_user),
+    admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
     admin_service = AdminDashboardService(session)
@@ -138,7 +138,7 @@ async def list_token_requests(
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
     email: Optional[str] = Query(None),
-    _: User = Depends(get_current_user),
+    admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
     tz = ZoneInfo("America/Sao_Paulo")
@@ -193,10 +193,11 @@ async def list_token_requests(
         total_pages=total_pages,
     )
 
+
 @router.get("/api/token-requests/{request_id}", response_model=ApiTokenRequestRead)
 async def get_token_request(
     request_id: UUID,
-    _: User = Depends(get_current_user),
+    admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
     svc = ApiTokenService(session)
@@ -212,7 +213,7 @@ async def get_token_request(
 @router.post("/api/token-requests/{request_id}/approve", response_model=ApiTokenRead)
 async def approve_token_request(
     request_id: UUID,
-    admin: User = Depends(get_current_user),
+    admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
     admin_service = AdminDashboardService(session)
@@ -240,7 +241,7 @@ async def approve_token_request(
 async def reject_token_request(
     request_id: UUID,
     body: RejectBody,
-    admin: User = Depends(get_current_user),
+    admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
     if not body.reason.strip():
@@ -275,7 +276,7 @@ async def list_tokens(
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
     email: Optional[str] = Query(None),
-    _: User = Depends(get_current_user),
+    admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
     tz = ZoneInfo("America/Sao_Paulo")
@@ -358,7 +359,7 @@ async def list_tokens(
 async def revoke_token(
     token_id: UUID,
     body: RejectBody | None = None,
-    admin: User = Depends(get_current_user),
+    admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
     reason = body.reason.strip() if body and body.reason else None
@@ -377,7 +378,7 @@ async def revoke_token(
 @router.get("/api/tokens/{token_id}")
 async def get_token_detail(
     token_id: UUID,
-    _: User = Depends(get_current_user),
+    admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
     svc = ApiTokenService(session)
