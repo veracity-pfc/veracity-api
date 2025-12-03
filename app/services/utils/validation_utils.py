@@ -69,3 +69,22 @@ def validate_name_format(name: str) -> str:
     if len(name) < 3 or len(name) > 30:
         raise ValueError("Nome deve ter entre 3 e 30 caracteres.")
     return name
+
+def anonymize_email(email: str | None) -> str:
+    if not email:
+        return ""
+    email = email.strip()
+    if not email:
+        return ""
+    if "@" not in email:
+        return "***"
+    local, domain = email.split("@", 1)
+    if not local:
+        masked_local = "***"
+    elif len(local) == 1:
+        masked_local = local + "***"
+    elif len(local) == 2:
+        masked_local = local[0] + "***"
+    else:
+        masked_local = local[0] + "***" + local[-1]
+    return f"{masked_local}@{domain}"

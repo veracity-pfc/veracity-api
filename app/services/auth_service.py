@@ -22,7 +22,7 @@ from app.services.utils.email_utils import (
     verification_email_html,
 )
 from app.api.deps import ip_hash_from_request
-from app.services.utils.validation_utils import normalize_email, validate_password_complexity
+from app.services.utils.validation_utils import normalize_email, validate_password_complexity, anonymize_email
 from app.core.constants import EMAIL_RE
 
 logger = logging.getLogger("veracity.auth_service")
@@ -62,12 +62,13 @@ class AuthService:
 
     async def login(self, email: str, password: str, request: Request) -> str:
         email = (email or "").strip().lower()
-        logger.info(f"Login attempt for email: {email}")
+        anonymized_email = anonymize_email(email)
+        logger.info(f"Login attempt for email: {anonymized_email}")
 
         user = await self.user_repo.get_by_email(email)
 
         if not user:
-            logger.warning(f"Login failed: User not found for email {email}")
+            logger.warning(f"Login failed: User not found for email {anonymized_email}")
             await self.audit_repo.insert(
                 AuditLog,
                 user_id=None,
@@ -75,7 +76,7 @@ class AuthService:
                 action="auth.login",
                 resource="/auth/login",
                 success=False,
-                details={"email": email, "reason": "user_not_found"},
+                details={"email": anonymized_email, "reason": "user_not_found"},
             )
             raise ValueError("Credenciais inválidas.")
 
@@ -88,7 +89,7 @@ class AuthService:
             is_active = True
 
         if not is_active:
-            logger.warning(f"Login failed: Account inactive for email {email}")
+            logger.warning(f"Login failed: Account inactive for email {anonymized_email}")
             await self.audit_repo.insert(
                 AuditLog,
                 user_id=user.id,
@@ -96,14 +97,14 @@ class AuthService:
                 action="auth.login",
                 resource="/auth/login",
                 success=False,
-                details={"email": email, "reason": "account_inactive"},
+                details={"email": anonymized_email, "reason": "account_inactive"},
             )
             raise ValueError(
                 "A conta vinculada ao e-mail informado está inativa. Reative a conta para poder acessar a plataforma."
             )
 
         if user.locked_until and user.locked_until > datetime.now(timezone.utc):
-            logger.warning(f"Login failed: Account locked for email {email}")
+            logger.warning(f"Login failed: Account locked for email {anonymized_email}")
             await self.audit_repo.insert(
                 AuditLog,
                 user_id=user.id,
@@ -111,7 +112,7 @@ class AuthService:
                 action="auth.login",
                 resource="/auth/login",
                 success=False,
-                details={"email": email, "reason": "account_locked"},
+                details={"email": anonymized_email, "reason": "account_locked"},
             )
             raise ValueError("Conta bloqueada temporariamente. Tente novamente em 3 minutos.")
 
@@ -123,7 +124,7 @@ class AuthService:
             await self.user_repo.update(user)
             await self.session.commit()
 
-            logger.warning(f"Login failed: Invalid password for email {email}")
+            logger.warning(f"Login failed: Invalid password for email {anonymized_email}")
             await self.audit_repo.insert(
                 AuditLog,
                 user_id=user.id,
@@ -131,7 +132,7 @@ class AuthService:
                 action="auth.login",
                 resource="/auth/login",
                 success=False,
-                details={"email": email, "reason": "credentials_invalid"},
+                details={"email": anonymized_email, "reason": "credentials_invalid"},
             )
             raise ValueError("Credenciais inválidas.")
 
@@ -161,13 +162,15 @@ class AuthService:
         accepted_terms: bool,
         request: Request,
     ) -> None:
-        logger.info(f"Register attempt for email: {email}")
         if not accepted_terms:
             raise ValueError("Termos de uso obrigatórios.")
 
-        email = email.strip().lower()
+        email = (email or "").strip().lower()
+        anonymized_email = anonymize_email(email)
+        logger.info(f"Register attempt for email: {anonymized_email}")
+
         if await self.user_repo.get_by_email(email):
-            logger.info(f"Register failed: Email {email} already exists")
+            logger.info(f"Register failed: Email {anonymized_email} already exists")
             raise ValueError("E-mail já cadastrado.")
 
         await self.pending_repo.delete_by_email(email)
@@ -190,10 +193,12 @@ class AuthService:
             html = verification_email_html(name, code)
             await send_email(email, "Confirme seu e-mail", html)
         except Exception as exc:
-            logger.error(f"Failed to send registration email to {email}: {exc}")
+            logger.error(
+                f"Failed to send registration email to {anonymized_email}: {exc}"
+            )
             raise ValueError(f"Falha ao enviar e-mail: {exc}")
 
-        logger.info(f"Registration pending created for {email}, ID: {pending.id}")
+        logger.info(f"Registration pending created for {anonymized_email}, ID: {pending.id}")
         await self.audit_repo.insert(
             AuditLog,
             user_id=None,
@@ -201,20 +206,21 @@ class AuthService:
             action="auth.register",
             resource="/auth/register",
             success=True,
-            details={"email": email, "registration_id": str(pending.id)},
+            details={"email": anonymized_email, "registration_id": str(pending.id)},
         )
         await self.session.commit()
 
     async def verify_email(self, email: str, code: str, request: Request) -> str:
         email = (email or "").strip().lower()
-        logger.info(f"Verifying email: {email}")
+        anonymized_email = anonymize_email(email)
+        logger.info(f"Verifying email: {anonymized_email}")
         pending = await self.pending_repo.get_by_email(email)
 
         if not pending:
-            logger.warning(f"Verify failed: No pending registration for {email}")
+            logger.warning(f"Verify failed: No pending registration for {anonymized_email}")
             raise ValueError("Solicitação não encontrada.")
         if pending.attempts >= 3:
-            logger.warning(f"Verify failed: Too many attempts for {email}")
+            logger.warning(f"Verify failed: Too many attempts for {anonymized_email}")
             await self.pending_repo.delete(pending)
             await self.session.commit()
             raise ValueError("Muitas tentativas. Registre-se novamente.")
@@ -257,7 +263,8 @@ class AuthService:
 
     async def resend_code(self, email: str, request: Request) -> None:
         email = (email or "").strip().lower()
-        logger.info(f"Resend code requested for {email}")
+        anonymized_email = anonymize_email(email)
+        logger.info(f"Resend code requested for {anonymized_email}")
         pending = await self.pending_repo.get_by_email(email)
         if not pending:
             raise ValueError("Solicitação não encontrada.")
@@ -287,19 +294,20 @@ class AuthService:
             action="auth.resend_code",
             resource="/auth/resend-code",
             success=True,
-            details={"email": email, "registration_id": str(pending.id)},
+            details={"email": anonymized_email, "registration_id": str(pending.id)},
         )
         await self.session.commit()
 
     async def forgot_password(self, email: str, request: Request) -> None:
         email = (email or "").strip().lower()
-        logger.info(f"Forgot password requested for {email}")
+        anonymized_email = anonymize_email(email)
+        logger.info(f"Forgot password requested for {anonymized_email}")
         if not EMAIL_RE.match(email) or len(email) > 60:
             raise ValueError("O e-mail digitado não é válido. Tente novamente.")
 
         user = await self.user_repo.get_by_email(email)
         if not user:
-            logger.info(f"Forgot password: User not found for {email}")
+            logger.info(f"Forgot password: User not found for {anonymized_email}")
             raise ValueError("O e-mail informado não está vinculado a nenhuma conta.")
         if user.status != UserStatus.active:
             raise ValueError(

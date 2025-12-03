@@ -35,7 +35,7 @@ from app.services.utils.email_utils import (
     send_email,
 )
 from app.services.history_service import normalize_date_range
-from app.services.utils.validation_utils import normalize_email
+from app.services.utils.validation_utils import normalize_email, anonymize_email
 
 logger = logging.getLogger("veracity.api_token_service")
 
@@ -95,6 +95,7 @@ class ApiTokenService:
         logger.info(f"Creating token request for user {user_id}")
         
         valid_email = normalize_email(email)
+        anonymized_email = anonymize_email(valid_email)
 
         existing_open = await self.requests.get_open_by_user(user_id)
         if existing_open:
@@ -118,7 +119,7 @@ class ApiTokenService:
             action="api_token_request.create",
             resource="/v1/contact",
             success=True,
-            details={"request_id": str(req.id), "email": valid_email},
+            details={"request_id": str(req.id), "email": anonymized_email},
         )
         await self.session.commit()
         return req
@@ -170,6 +171,9 @@ class ApiTokenService:
         total_pages = ceil(total / page_size) if page_size else 1
         return total, total_pages, rows
 
+    async def get_request(self, request_id: UUID) -> Optional[ApiTokenRequest]:
+        return await self.requests.get(request_id)
+
     async def approve_request(
         self,
         *,
@@ -201,7 +205,9 @@ class ApiTokenService:
             html = build_api_token_approved_email_html(token.expires_at)
             await send_email(req.email, "Token de API gerado com sucesso", html)
         except EmailError:
-            logger.error(f"Failed to send approval email to {req.email}")
+            logger.error(
+                f"Failed to send approval email to {anonymize_email(req.email)}"
+            )
 
         await self.audit.insert(
             table=AuditLog,
@@ -248,7 +254,9 @@ class ApiTokenService:
             )
             email_sent = True
         except EmailError:
-            logger.error(f"Failed to send rejection email to {req.email}")
+            logger.error(
+                f"Failed to send rejection email to {anonymize_email(req.email)}"
+            )
             email_sent = False
 
         await self.audit.insert(
@@ -289,7 +297,9 @@ class ApiTokenService:
                 html_body=html,
             )
         except EmailError:
-            logger.error(f"Failed to send revocation email to {token.user.email}")
+            logger.error(
+                f"Failed to send revocation email to {anonymize_email(token.user.email)}"
+            )
 
         await self.audit.insert(
             table=AuditLog,

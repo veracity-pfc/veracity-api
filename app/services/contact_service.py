@@ -20,7 +20,7 @@ from app.services.utils.email_utils import (
     build_contact_reply_email_html,
     send_email,
 )
-from app.services.utils.validation_utils import normalize_email
+from app.services.utils.validation_utils import normalize_email, anonymize_email
 
 logger = logging.getLogger("veracity.contact_service")
 
@@ -88,6 +88,7 @@ class ContactService:
         logger.info(f"Processing new contact request. Category: {category.value}, UserID: {user_id}")
         
         valid_email = normalize_email(email)
+        anonymized_email = anonymize_email(valid_email)
 
         await self._check_rate_limit(user_id, category)
 
@@ -108,7 +109,7 @@ class ContactService:
             action="contact.create",
             resource="/contact",
             success=True,
-            details={"category": category.value, "subject": subject, "email": valid_email},
+            details={"category": category.value, "subject": subject, "email": anonymized_email},
         )
         await self.session.commit()
         logger.info(f"Contact request created successfully. ID: {new_req.id}")

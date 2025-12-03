@@ -32,6 +32,7 @@ from app.services.utils.validation_utils import (
     normalize_email,
     validate_name_format,
     validate_password_complexity,
+    anonymize_email,
 )
 from app.core.constants import CODE_RE
 
@@ -228,10 +229,12 @@ class UserService:
             raise ValueError("E-mail já está em uso.")
 
     async def register_user(self, name: str, email: str, password: str, request: Request) -> User:
-        logger.info(f"Registering new user: {email}")
+        email_normalized = normalize_email(email)
+        anonymized_email = anonymize_email(email_normalized)
+        logger.info(f"Registering new user: {anonymized_email}")
         
         name = validate_name_format(name)
-        email = normalize_email(email)
+        email = email_normalized
         await self._ensure_unique_email(email)
         validate_password_complexity(password)
 
@@ -245,14 +248,16 @@ class UserService:
             action="user.register",
             resource="/auth/register",
             success=True,
-            details={"email": email},
+            details={"email": anonymized_email},
         )
         await self.session.commit()
         return user
 
     async def authenticate_user(self, email: str, password: str, request: Request) -> User:
-        logger.info(f"Authenticating user: {email}")
-        email = normalize_email(email)
+        email_normalized = normalize_email(email)
+        anonymized_email = anonymize_email(email_normalized)
+        logger.info(f"Authenticating user: {anonymized_email}")
+        email = email_normalized
         user = await self.users.get_by_email(email)
         if not user:
             raise ValueError("Credenciais inválidas.")
@@ -382,6 +387,7 @@ class UserService:
 
     async def request_reactivation_code(self, raw_email: str, request: Request) -> None:
         email = normalize_email(raw_email)
+        anonymized_email = anonymize_email(email)
         user = await self.users.get_by_email(email)
         if not user:
             raise ValueError("E-mail não encontrado.")
@@ -398,7 +404,7 @@ class UserService:
             action="user.reactivate.request_code",
             resource="/user/reactivate-account",
             success=True,
-            details={"email": email},
+            details={"email": anonymized_email},
         )
         await self.session.commit()
 
@@ -409,6 +415,7 @@ class UserService:
         request: Request,
     ) -> None:
         email = normalize_email(raw_email)
+        anonymized_email = anonymize_email(email)
         user = await self.users.get_by_email(email)
         if not user:
             raise ValueError("E-mail não encontrado.")
@@ -425,7 +432,7 @@ class UserService:
                 action="user.reactivate.confirm_code",
                 resource="/user/reactivate-account",
                 success=True,
-                details={"email": email, "code": code},
+                details={"email": anonymized_email, "code": code},
             )
             await self.session.commit()
         except ValueError as exc:
@@ -436,7 +443,7 @@ class UserService:
                 action="user.reactivate.confirm_code",
                 resource="user",
                 success=False,
-                details={"email": raw_email, "code": code, "error": str(exc)},
+                details={"email": anonymize_email(raw_email), "code": code, "error": str(exc)},
             )
             await self.session.commit()
             raise
@@ -453,6 +460,7 @@ class UserService:
     ) -> None:
         logger.info(f"User {user_id} requesting email change")
         email = await self._normalize_and_validate_new_email_for_change(user_id, raw_email)
+        anonymized_email = anonymize_email(email)
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
@@ -468,7 +476,7 @@ class UserService:
             action="user.email_change.request",
             resource="/v1/user/profile/email-change/request",
             success=True,
-            details={"new_email": email},
+            details={"new_email": anonymized_email},
         )
         await self.session.commit()
 
@@ -490,6 +498,7 @@ class UserService:
             raise ValueError("Código inválido.")
 
         new_email = user.pending_email
+        anonymized_email = anonymize_email(new_email)
         await self._ensure_unique_email(new_email)
         user.email = new_email
         user.pending_email = None
@@ -503,7 +512,7 @@ class UserService:
             action="user.email_change.confirm",
             resource="/v1/user/profile/email-change/confirm",
             success=True,
-            details={"new_email": new_email},
+            details={"new_email": anonymized_email},
         )
         await self.session.commit()
 
