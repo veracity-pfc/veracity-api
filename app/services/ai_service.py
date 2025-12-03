@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import json
 import logging
+import re
 import time
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
@@ -11,10 +13,9 @@ import httpx
 from tld import get_tld
 
 from app.core.config import settings
-from app.core.constants import GENERIC_ANALYSIS_ERROR, HAS_DIGIT_RE
+from app.core.constants import GENERIC_ANALYSIS_ERROR, HAS_DIGIT_RE, QUERY_DOMAIN_RE
 
 logger = logging.getLogger("veracity.ai_service")
-
 
 @dataclass(slots=True)
 class URLSignals:
@@ -32,6 +33,9 @@ class URLSignals:
     query_len: int
     hosting_provider: str
     is_hosting_provider: bool
+    is_https: bool
+    query_domain: str
+    query_domain_mismatch: bool
 
 
 def _detect_hosting_provider(host: str) -> str:
@@ -58,9 +62,7 @@ def _detect_hosting_provider(host: str) -> str:
 def _compute_signals(url: str, *, tld_ok_input: bool, dns_ok: bool) -> URLSignals:
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
-
     hosting_provider = _detect_hosting_provider(host)
-
     try:
         res = get_tld(url, as_object=True, fix_protocol=True)
         tld = str(res.tld)
@@ -68,9 +70,13 @@ def _compute_signals(url: str, *, tld_ok_input: bool, dns_ok: bool) -> URLSignal
     except Exception:
         tld = ""
         tld_valid = False
-
     sub_count = max(0, host.count(".") - 1)
-
+    path = parts.path or ""
+    query = parts.query or ""
+    combined = f"{path}?{query}" if query or path else ""
+    m = QUERY_DOMAIN_RE.search(combined)
+    query_domain = m.group(1).lower() if m else ""
+    query_domain_mismatch = bool(query_domain and query_domain not in host)
     return URLSignals(
         url=url,
         host=host,
@@ -82,10 +88,13 @@ def _compute_signals(url: str, *, tld_ok_input: bool, dns_ok: bool) -> URLSignal
         has_hyphen=("-" in host) or ("_" in host),
         has_digits=bool(HAS_DIGIT_RE.search(host)),
         is_punycode=host.startswith("xn--"),
-        path_len=len(parts.path or ""),
-        query_len=len(parts.query or ""),
+        path_len=len(path),
+        query_len=len(query),
         hosting_provider=hosting_provider,
         is_hosting_provider=bool(hosting_provider),
+        is_https=parts.scheme.lower() == "https",
+        query_domain=query_domain,
+        query_domain_mismatch=query_domain_mismatch,
     )
 
 
@@ -100,17 +109,19 @@ def _build_prompt(gsb_json: Dict[str, Any], sig: URLSignals) -> str:
         f"Google Safe Browsing: {gsb}\n"
         "Instruções:\n"
         "- Avalie se o endereço tenta se passar por outro pela forma do domínio e subdomínios.\n"
-        "- Mesmo sem alertas no GSB, considere: TLD desconhecido, punycode, muitos subdomínios, hífens/números e caminho longo.\n"
+        "- Mesmo sem alertas no GSB, considere: TLD desconhecido, punycode, muitos subdomínios, hífens/números, caminho longo e uso de HTTP sem HTTPS.\n"
         "- Se o campo \"is_hosting_provider\" for verdadeiro, você DEVE classificar como \"Suspeito\", "
         "explicando que empresas legítimas normalmente usam domínios próprios (como \"empresa.com\" ou "
         "\"empresa.com.br\") em vez de subdomínios genéricos em provedores como Vercel, Render, Netlify, "
         "Firebase ou similares.\n"
+        "- Se o campo \"query_domain_mismatch\" for verdadeiro, considere a URL no mínimo como \"Suspeito\", "
+        "explicando que o endereço real é de um domínio estranho usando o nome de outro site dentro da URL.\n"
         "- Explique em UM parágrafo curto, SEM termos técnicos; foque no que o usuário leigo precisa saber e por quê.\n"
         "- Em seguida, traga 2 recomendações práticas e curtas.\n"
         "Responda SOMENTE com JSON válido no formato exato:\n"
         '{ "classification": "Seguro|Suspeito|Malicioso", '
         '"explanation": "um parágrafo claro e simples", '
-        '"recommendations": ["recomendação 1", "recomendação 2"] }\n"'
+        '"recommendations": ["recomendação 1", "recomendação 2"] }'
     )
 
 
@@ -163,58 +174,57 @@ async def _hf_chat(
         "messages": [{"role": "user", "content": prompt}],
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "stream": False
+        "stream": False,
     }
     t0 = time.perf_counter()
     logger.debug("Sending request to HF Inference API")
     try:
-        r = await client.post(
-            url, json=body, headers=headers, timeout=40.0 
-        )
+        r = await client.post(url, json=body, headers=headers, timeout=40.0)
         duration = round((time.perf_counter() - t0) * 1000, 1)
-        
         raw_response = r.text
-        logger.info(f"HF API response. Status: {r.status_code}, Duration: {duration}ms. Raw Body Snippet: {raw_response[:700]}")
-
+        logger.info(
+            f"HF API response. Status: {r.status_code}, Duration: {duration}ms. Raw Body Snippet: {raw_response[:700]}"
+        )
         if r.status_code >= 400:
             logger.error(f"HF API Error Body: {raw_response}")
-            r.raise_for_status()
-
+            raise ValueError(GENERIC_ANALYSIS_ERROR)
         try:
             jr = r.json()
         except json.JSONDecodeError:
             logger.error(f"HF returned invalid JSON. Raw body: {raw_response}")
-            return {}
-
+            raise ValueError(GENERIC_ANALYSIS_ERROR)
         choices = jr.get("choices", [])
         if not choices:
             logger.error(f"HF response has no 'choices'. Full JSON: {jr}")
-            return {}
-            
+            raise ValueError(GENERIC_ANALYSIS_ERROR)
         message_content = choices[0].get("message", {}).get("content", "")
         if not message_content:
             logger.error(f"HF message content is empty. Full JSON: {jr}")
-            return {}
-
+            raise ValueError(GENERIC_ANALYSIS_ERROR)
         logger.debug(f"AI Content extracted: {message_content[:200]}...")
-
         s = message_content.find("{")
         e = message_content.rfind("}")
-        
-        if s != -1 and e != -1:
-            json_str = message_content[s : e + 1]
-            try:
-                return json.loads(json_str)
-            except json.JSONDecodeError as je:
-                logger.error(f"Failed to parse inner JSON from AI content. Error: {je}. Content: {json_str}")
-                return {}
-        else:
+        if s == -1 or e == -1:
             logger.warning(f"No JSON brackets found in AI response. Content: {message_content}")
-            return {}
-
+            raise ValueError(GENERIC_ANALYSIS_ERROR)
+        json_str = message_content[s : e + 1]
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError as je:
+            logger.warning(f"Failed to parse JSON. Trying literal eval. Error: {je}. Content: {json_str}")
+            try:
+                obj = ast.literal_eval(json_str)
+                if isinstance(obj, dict):
+                    return obj
+                logger.error(f"Literal eval did not return dict. Type: {type(obj)}")
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
+            except Exception as exc:
+                logger.error(f"Failed to parse AI content with literal eval. Error: {exc}. Content: {json_str}")
+                raise ValueError(GENERIC_ANALYSIS_ERROR)
     except httpx.HTTPError as exc:
         logger.error(f"HF HTTP connection error: {type(exc).__name__} - {str(exc)}")
         raise ValueError("AI_SERVICE_UNAVAILABLE")
+
 
 class AIService:
     __slots__ = ("client",)
@@ -233,11 +243,9 @@ class AIService:
         logger.info(f"Generating AI analysis for URL: {url}")
         client = self.client or httpx.AsyncClient(timeout=settings.http_timeout)
         close_client = self.client is None
-
         try:
             sig = _compute_signals(url, tld_ok_input=tld_ok, dns_ok=dns_ok)
             prompt = _build_prompt(gsb_json or {}, sig)
-
             try:
                 out = await _hf_chat(
                     client,
@@ -248,35 +256,37 @@ class AIService:
             except Exception as exc:
                 logger.exception("Failed to query HF API for URL analysis")
                 raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
-
             if not isinstance(out, dict):
                 logger.error(f"AI returned invalid type: {type(out)}")
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
-
             classification = str(out.get("classification", "")).strip()
             explanation = str(out.get("explanation", "")).strip()
             recs = out.get("recommendations")
-
             if not classification or not explanation:
-                logger.error(f"AI returned incomplete data. Class: '{classification}', Exp len: {len(explanation)}")
+                logger.error(
+                    f"AI returned incomplete data. Class: '{classification}', Exp len: {len(explanation)}"
+                )
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
-
-            if not isinstance(recs, list):
-                recs = []
-
-            out = {
+            if isinstance(recs, list):
+                recommendations = [str(r).strip() for r in recs if str(r).strip()]
+            elif recs:
+                recommendations = [str(recs).strip()]
+            else:
+                recommendations = []
+            out_clean = {
                 "classification": classification,
-                "explanation": explanation,
-                "recommendations": recs,
+                "explanation": " ".join(explanation.split()),
+                "recommendations": recommendations,
             }
-
             if sig.is_hosting_provider:
-                current_cls = out["classification"]
+                current_cls = out_clean["classification"]
                 if not current_cls or current_cls.lower().startswith("segur"):
-                    out["classification"] = "Suspeito"
-
-            out["explanation"] = " ".join(str(out.get("explanation", "")).split())
-            return out
+                    out_clean["classification"] = "Suspeito"
+            if sig.query_domain_mismatch:
+                current_cls = out_clean["classification"]
+                if not current_cls or current_cls.lower().startswith("segur"):
+                    out_clean["classification"] = "Suspeito"
+            return out_clean
         finally:
             if close_client:
                 await client.aclose()
@@ -292,10 +302,8 @@ class AIService:
         se_full = detection_json or {}
         client = self.client or httpx.AsyncClient(timeout=settings.http_timeout)
         close_client = self.client is None
-
         try:
             prompt = _build_image_prompt_full(filename, mime, se_full)
-
             try:
                 out = await _hf_chat(
                     client,
@@ -306,36 +314,26 @@ class AIService:
             except Exception as exc:
                 logger.exception("Failed to query HF API for Image analysis")
                 raise ValueError(GENERIC_ANALYSIS_ERROR) from exc
-
             if not isinstance(out, dict):
                 logger.error(f"HF Analysis failed: Output is not a dict. Type: {type(out)}")
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
-
-            required_keys = {"explanation", "recommendations"}
-            missing_keys = required_keys - out.keys()
-            
-            if missing_keys:
-                logger.error(f"HF Analysis missing keys. Missing: {missing_keys}. Got keys: {list(out.keys())}")
-                raise ValueError(GENERIC_ANALYSIS_ERROR)
-
             explanation = str(out.get("explanation", "")).strip()
             if not explanation:
                 logger.error("HF Analysis returned empty explanation")
                 raise ValueError(GENERIC_ANALYSIS_ERROR)
-
-            out["explanation"] = " ".join(explanation.split())
-
             recs = out.get("recommendations") or []
             if isinstance(recs, list):
-                out["recommendations"] = [
-                    str(r).strip() for r in recs if str(r).strip()
-                ]
+                recommendations = [str(r).strip() for r in recs if str(r).strip()]
             elif recs:
-                out["recommendations"] = [str(recs).strip()]
+                recommendations = [str(recs).strip()]
             else:
-                out["recommendations"] = []
-
-            return out
+                recommendations = []
+            classification = str(out.get("classification", "")).strip() or "Suspeito"
+            return {
+                "explanation": " ".join(explanation.split()),
+                "recommendations": recommendations,
+                "classification": classification,
+            }
         finally:
             if close_client:
                 await client.aclose()

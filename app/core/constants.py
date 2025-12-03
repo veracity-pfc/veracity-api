@@ -18,6 +18,11 @@ GENERIC_ANALYSIS_ERROR = "Não foi possível processar a análise agora. Tente n
 
 RESEND_API = "https://api.resend.com/emails"
 
+QUERY_DOMAIN_RE = re.compile(
+    r"([a-zA-Z0-9-]{1,63}\.(?:com|com\.br|br|net|org|gov|gov\.br))",
+    re.IGNORECASE,
+)
+
 DNS_TIMEOUT = 1.2
 
 DEFAULT_TOKEN_TTL_DAYS = 90
