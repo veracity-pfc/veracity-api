@@ -8,33 +8,40 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Tuple
 from zoneinfo import ZoneInfo
+
 from fastapi import Request
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import ip_hash_from_request
 from app.core.config import settings
-from app.domain.audit_model import AuditLog
-from app.domain.enums import UserStatus, AnalysisType, AnalysisStatus, ContactStatus, ApiTokenRequestStatus
-from app.domain.user_model import User
+from app.core.constants import CODE_RE
 from app.domain.analysis_model import Analysis
-from app.domain.contact_request_model import ContactRequest
 from app.domain.api_token_request_model import ApiTokenRequest
+from app.domain.audit_model import AuditLog
+from app.domain.contact_request_model import ContactRequest
+from app.domain.enums import (
+    AnalysisStatus,
+    AnalysisType,
+    ApiTokenRequestStatus,
+    ContactStatus,
+    UserStatus,
+)
+from app.domain.user_model import User
+from app.repositories.api_token_repository import ApiTokenRepository
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.user_repository import UserRepository
-from app.repositories.api_token_repository import ApiTokenRepository
 from app.services.utils.email_utils import (
-    send_email,
-    reactivate_account_email_html,
     email_change_email_html,
+    reactivate_account_email_html,
+    send_email,
 )
 from app.services.utils.validation_utils import (
+    anonymize_email,
     normalize_email,
     validate_name_format,
     validate_password_complexity,
-    anonymize_email,
 )
-from app.core.constants import CODE_RE
 
 logger = logging.getLogger("veracity.user_service")
 
@@ -51,13 +58,13 @@ class UserService:
         user_id: str,
         analysis_type: str,
         start_date: datetime | None = None,
-        end_date: datetime | None = None
+        end_date: datetime | None = None,
     ) -> int:
         stmt = select(func.count(Analysis.id)).where(
             Analysis.user_id == user_id,
             Analysis.api_token_id.is_(None),
             Analysis.analysis_type == analysis_type,
-            Analysis.status != AnalysisStatus.error
+            Analysis.status != AnalysisStatus.error,
         )
 
         if start_date:
@@ -150,7 +157,12 @@ class UserService:
 
         tz = ZoneInfo("America/Sao_Paulo")
         now_local = datetime.now(tz)
-        start_local = datetime(now_local.year, now_local.month, now_local.day, tzinfo=tz)
+        start_local = datetime(
+            now_local.year,
+            now_local.month,
+            now_local.day,
+            tzinfo=tz,
+        )
         end_local = start_local + timedelta(days=1)
         start_today = start_local.astimezone(timezone.utc)
         end_today = end_local.astimezone(timezone.utc)
@@ -158,14 +170,26 @@ class UserService:
         total_urls = await self._count_web_analyses(user_key, AnalysisType.url)
         total_images = await self._count_web_analyses(user_key, AnalysisType.image)
 
-        today_urls = await self._count_web_analyses(user_key, AnalysisType.url, start_today, end_today)
-        today_images = await self._count_web_analyses(user_key, AnalysisType.image, start_today, end_today)
+        today_urls = await self._count_web_analyses(
+            user_key,
+            AnalysisType.url,
+            start_today,
+            end_today,
+        )
+        today_images = await self._count_web_analyses(
+            user_key,
+            AnalysisType.image,
+            start_today,
+            end_today,
+        )
 
         url_daily_limit = int(getattr(settings, "user_url_limit", 0) or 0)
         image_daily_limit = int(getattr(settings, "user_image_limit", 0) or 0)
 
         remaining_urls = max(url_daily_limit - today_urls, 0) if url_daily_limit else 0
-        remaining_images = max(image_daily_limit - today_images, 0) if image_daily_limit else 0
+        remaining_images = (
+            max(image_daily_limit - today_images, 0) if image_daily_limit else 0
+        )
 
         api_token_info = None
         active_token = await self.tokens.get_active_by_user(db_user.id)
@@ -228,18 +252,28 @@ class UserService:
         if existing:
             raise ValueError("E-mail já está em uso.")
 
-    async def register_user(self, name: str, email: str, password: str, request: Request) -> User:
+    async def register_user(
+        self,
+        name: str,
+        email: str,
+        password: str,
+        request: Request,
+    ) -> User:
         email_normalized = normalize_email(email)
         anonymized_email = anonymize_email(email_normalized)
         logger.info(f"Registering new user: {anonymized_email}")
-        
+
         name = validate_name_format(name)
         email = email_normalized
         await self._ensure_unique_email(email)
         validate_password_complexity(password)
 
         hashed = self._hash_password(password)
-        user = await self.users.create_user(name=name, email=email, password_hash=hashed)
+        user = await self.users.create_user(
+            name=name,
+            email=email,
+            password_hash=hashed,
+        )
 
         await self.audit_repo.insert(
             AuditLog,
@@ -253,10 +287,16 @@ class UserService:
         await self.session.commit()
         return user
 
-    async def authenticate_user(self, email: str, password: str, request: Request) -> User:
+    async def authenticate_user(
+        self,
+        email: str,
+        password: str,
+        request: Request,
+    ) -> User:
         email_normalized = normalize_email(email)
         anonymized_email = anonymize_email(email_normalized)
         logger.info(f"Authenticating user: {anonymized_email}")
+
         email = email_normalized
         user = await self.users.get_by_email(email)
         if not user:
@@ -277,6 +317,14 @@ class UserService:
         await self.session.commit()
         return user
 
+    def _is_admin(self, user: User) -> bool:
+        role_value = getattr(user, "role", None)
+        if hasattr(role_value, "value"):
+            role_value = role_value.value
+        if isinstance(role_value, str):
+            return role_value.lower() == "admin"
+        return False
+
     async def change_password(
         self,
         user_id: str,
@@ -288,10 +336,14 @@ class UserService:
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
+        if self._is_admin(user):
+            raise ValueError("Administradores não podem alterar a própria senha pela plataforma.")
         if not self._verify_password(current_password, user.password_hash):
-            logger.warning(f"Change password failed for user {user_id}: incorrect current password")
+            logger.warning(
+                f"Change password failed for user {user_id}: incorrect current password"
+            )
             raise ValueError("Senha atual incorreta.")
-        
+
         validate_password_complexity(new_password)
         user.password_hash = self._hash_password(new_password)
         await self.users.update(user)
@@ -311,8 +363,11 @@ class UserService:
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
+        if self._is_admin(user):
+            raise ValueError("Administradores não podem alterar dados do perfil.")
         if user.name == name:
             return user.name
+
         user.name = name
         await self.users.update(user)
         await self.audit_repo.insert(
@@ -332,8 +387,11 @@ class UserService:
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
+        if self._is_admin(user):
+            raise ValueError("Administradores não podem alterar dados do perfil.")
         if user.email == email:
             return user.email
+
         await self._ensure_unique_email(email)
         user.email = email
         await self.users.update(user)
@@ -348,7 +406,11 @@ class UserService:
         await self.session.commit()
         return user.email
 
-    async def _normalize_and_validate_new_email_for_change(self, user_id: str, raw_email: str) -> str:
+    async def _normalize_and_validate_new_email_for_change(
+        self,
+        user_id: str,
+        raw_email: str,
+    ) -> str:
         email = normalize_email(raw_email)
         existing = await self.users.get_by_email(email)
         if existing and str(existing.id) != user_id:
@@ -385,7 +447,11 @@ class UserService:
                 return True
         return False
 
-    async def request_reactivation_code(self, raw_email: str, request: Request) -> None:
+    async def request_reactivation_code(
+        self,
+        raw_email: str,
+        request: Request,
+    ) -> None:
         email = normalize_email(raw_email)
         anonymized_email = anonymize_email(email)
         user = await self.users.get_by_email(email)
@@ -443,7 +509,11 @@ class UserService:
                 action="user.reactivate.confirm_code",
                 resource="user",
                 success=False,
-                details={"email": anonymize_email(raw_email), "code": code, "error": str(exc)},
+                details={
+                    "email": anonymize_email(raw_email),
+                    "code": code,
+                    "error": str(exc),
+                },
             )
             await self.session.commit()
             raise
@@ -459,11 +529,18 @@ class UserService:
         request: Request,
     ) -> None:
         logger.info(f"User {user_id} requesting email change")
-        email = await self._normalize_and_validate_new_email_for_change(user_id, raw_email)
-        anonymized_email = anonymize_email(email)
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
+        if self._is_admin(user):
+            raise ValueError("Administradores não podem alterar dados do perfil.")
+
+        email = await self._normalize_and_validate_new_email_for_change(
+            user_id,
+            raw_email,
+        )
+        anonymized_email = anonymize_email(email)
+
         code = self._generate_random_code()
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
         await self.users.set_email_change_code(user.id, email, code, expires_at)
@@ -485,12 +562,18 @@ class UserService:
         user_id: str,
         code: str,
         request: Request,
-    ) -> None:
+    ) -> str:
         logger.info(f"User {user_id} confirming email change")
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
-        if not user.pending_email or not user.pending_email_code or not user.pending_email_expires_at:
+        if self._is_admin(user):
+            raise ValueError("Administradores não podem alterar dados do perfil.")
+        if (
+            not user.pending_email
+            or not user.pending_email_code
+            or not user.pending_email_expires_at
+        ):
             raise ValueError("Nenhuma alteração de e-mail pendente.")
         if user.pending_email_expires_at < datetime.now(timezone.utc):
             raise ValueError("Código expirado.")
@@ -500,10 +583,12 @@ class UserService:
         new_email = user.pending_email
         anonymized_email = anonymize_email(new_email)
         await self._ensure_unique_email(new_email)
+
         user.email = new_email
         user.pending_email = None
         user.pending_email_code = None
         user.pending_email_expires_at = None
+
         await self.users.update(user)
         await self.audit_repo.insert(
             AuditLog,
@@ -515,6 +600,7 @@ class UserService:
             details={"new_email": anonymized_email},
         )
         await self.session.commit()
+        return user.email
 
     def _is_active_user(self, user: User) -> bool:
         status_value = getattr(user, "status", None)
@@ -559,7 +645,11 @@ class UserService:
         )
         await self.session.commit()
 
-    async def _revoke_active_token_for_user_auto(self, user_id: str, reason: str) -> None:
+    async def _revoke_active_token_for_user_auto(
+        self,
+        user_id: str,
+        reason: str,
+    ) -> None:
         token = await self.tokens.get_active_by_user(user_id)
         if not token:
             return
@@ -575,7 +665,11 @@ class UserService:
             details={"reason": reason, "token_id": str(token.id)},
         )
 
-    async def _close_requests_for_deleted_user(self, user: User, closed_at: datetime) -> None:
+    async def _close_requests_for_deleted_user(
+        self,
+        user: User,
+        closed_at: datetime,
+    ) -> None:
         message = "Solicitação encerrada pois a conta do usuário foi excluída."
         result_contacts = await self.session.execute(
             select(ContactRequest).where(
@@ -601,7 +695,7 @@ class UserService:
             req.rejection_reason = message
             req.decided_at = closed_at
             req.decided_by_admin_id = None
-            
+
     async def inactivate_account(self, user_id: str) -> None:
         user = await self.users.get_by_id(user_id)
         if not user:
