@@ -11,7 +11,6 @@ from sqlalchemy import (
     literal,
     select,
     String,
-    text,
     union_all,
     or_,
 )
@@ -35,22 +34,20 @@ class AdminRepository:
         else:
             end = date(year, month + 1, 1)
 
-        query = text(
-            """
-            SELECT status, COUNT(*) AS total
-            FROM users
-            WHERE created_at < :end_date
-            GROUP BY status
-            """
+        stmt = (
+            select(User.status, func.count(User.id))
+            .where(User.created_at < end)
+            .group_by(User.status)
         )
 
-        result = await self._session.execute(query, {"end_date": end})
+        result = await self._session.execute(stmt)
         rows = result.all()
 
         metrics = {"active": 0, "inactive": 0}
-        for status, total in rows:
-            if status in metrics:
-                metrics[status] = int(total)
+        for status_enum, total in rows:
+            val = status_enum.value if hasattr(status_enum, "value") else str(status_enum)
+            if val in metrics:
+                metrics[val] = int(total)
 
         return metrics
 

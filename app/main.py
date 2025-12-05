@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import asyncio
 from contextlib import asynccontextmanager
 
 from bcrypt import checkpw, hashpw, gensalt
@@ -10,7 +9,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from sqlalchemy import text
 
 from app.core.database import engine
 from app.core.security import pwd_context
@@ -32,42 +30,24 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
+
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logging.getLogger("httpx").propagate = False
 logging.getLogger("httpcore").propagate = False
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        async with engine.begin() as conn:
-            await conn.execute(text("SELECT 1"))
-            await conn.execute(text("SELECT 1 FROM users LIMIT 1"))
-
         hashed = pwd_context.hash("warmup@123!")
         pwd_context.verify("warmup@123!", hashed)
         checkpw(b"warmup", hashpw(b"warmup", gensalt()))
     except Exception:
         pass
 
-    async def keepalive():
-        while True:
-            try:
-                async with engine.begin() as conn:
-                    await conn.execute(text("SELECT 1"))
-            except Exception:
-                pass
-            await asyncio.sleep(300)
-
-    task = asyncio.create_task(keepalive())
-
     yield
-
-    try:
-        task.cancel()
-    except Exception:
-        pass
 
     try:
         await engine.dispose()

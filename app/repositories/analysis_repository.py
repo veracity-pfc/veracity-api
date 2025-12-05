@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple
 
-from sqlalchemy import bindparam, func, select, text
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.ai_model import AIResponse
@@ -56,7 +56,7 @@ class AnalysisRepository:
                 Analysis.label,
                 Analysis.status,
                 Analysis.source_url,
-                Analysis.api_token_id,  
+                Analysis.api_token_id,
             )
             .where(*filters)
             .order_by(Analysis.created_at.desc())
@@ -123,55 +123,64 @@ class AnalysisRepository:
     async def monthly_metrics(
         self, *, year: int, month: int
     ) -> dict[str, dict[str, int]]:
-        sql = text(
-            """
-            WITH month_range AS (
-                SELECT
-                    make_timestamptz(:y, :m, 1, 0, 0, 0) AS start_dt,
-                    (make_timestamptz(:y, :m, 1, 0, 0, 0) + INTERVAL '1 month') AS end_dt
-            )
-            SELECT
-                COUNT(*) FILTER (
-                    WHERE a.analysis_type = 'url'
-                      AND a.label = 'suspicious'
-                      AND a.created_at >= mr.start_dt
-                      AND a.created_at <  mr.end_dt
-                ) AS url_suspicious,
-                COUNT(*) FILTER (
-                    WHERE a.analysis_type = 'url'
-                      AND a.label = 'malicious'
-                      AND a.created_at >= mr.start_dt
-                      AND a.created_at <  mr.end_dt
-                ) AS url_malicious,
-                COUNT(*) FILTER (
-                    WHERE a.analysis_type = 'url'
-                      AND a.label = 'safe'
-                      AND a.created_at >= mr.start_dt
-                      AND a.created_at <  mr.end_dt
-                ) AS url_safe,
-                COUNT(*) FILTER (
-                    WHERE a.analysis_type = 'image'
-                      AND a.label = 'fake'
-                      AND a.created_at >= mr.start_dt
-                      AND a.created_at <  mr.end_dt
-                ) AS image_fake,
-                COUNT(*) FILTER (
-                    WHERE a.analysis_type = 'image'
-                      AND a.label = 'safe'
-                      AND a.created_at >= mr.start_dt
-                      AND a.created_at <  mr.end_dt
-                ) AS image_safe,
-                COUNT(*) FILTER (
-                    WHERE a.created_at >= mr.start_dt
-                      AND a.created_at <  mr.end_dt
-                ) AS total_month
-            FROM analyses a
-            CROSS JOIN month_range mr
-        """
-        ).bindparams(bindparam("y", year), bindparam("m", month))
+        start_dt = datetime(year, month, 1)
+        if month == 12:
+            end_dt = datetime(year + 1, 1, 1)
+        else:
+            end_dt = datetime(year, month + 1, 1)
 
-        res = await self.session.execute(sql)
-        row = res.first() or (0, 0, 0, 0, 0)
+        stmt = (
+            select(
+                func.count()
+                .filter(
+                    and_(
+                        Analysis.analysis_type == AnalysisType.url,
+                        Analysis.label == RiskLabel.suspicious,
+                    )
+                )
+                .label("url_suspicious"),
+                func.count()
+                .filter(
+                    and_(
+                        Analysis.analysis_type == AnalysisType.url,
+                        Analysis.label == RiskLabel.malicious,
+                    )
+                )
+                .label("url_malicious"),
+                func.count()
+                .filter(
+                    and_(
+                        Analysis.analysis_type == AnalysisType.url,
+                        Analysis.label == RiskLabel.safe,
+                    )
+                )
+                .label("url_safe"),
+                func.count()
+                .filter(
+                    and_(
+                        Analysis.analysis_type == AnalysisType.image,
+                        Analysis.label == RiskLabel.fake,
+                    )
+                )
+                .label("image_fake"),
+                func.count()
+                .filter(
+                    and_(
+                        Analysis.analysis_type == AnalysisType.image,
+                        Analysis.label == RiskLabel.safe,
+                    )
+                )
+                .label("image_safe"),
+                func.count().label("total_month"),
+            )
+            .where(
+                Analysis.created_at >= start_dt,
+                Analysis.created_at < end_dt,
+            )
+        )
+
+        res = await self.session.execute(stmt)
+        row = res.first() or (0, 0, 0, 0, 0, 0)
 
         url_suspicious = int(row[0] or 0)
         url_malicious = int(row[1] or 0)
