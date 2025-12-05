@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.repositories.admin_repository import AdminRepository
 from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.contact_repository import ContactRepository
+from app.services.utils.validation_utils import anonymize_email
 
 logger = logging.getLogger("veracity.admin_service")
 
@@ -31,7 +32,7 @@ class AdminDashboardService:
 
         analysis_bars = dict(analysis_raw.get("bars") or {})
         analysis_totals_raw = dict(analysis_raw.get("totals") or {})
-        
+
         urls_month = int(analysis_totals_raw.get("urls_month", 0))
         images_month = int(analysis_totals_raw.get("images_month", 0))
         total_month = urls_month + images_month
@@ -76,7 +77,7 @@ class AdminDashboardService:
                 "total_tokens": total_tokens,
                 "active": t_active,
                 "revoked": t_revoked,
-            }
+            },
         }
 
         r_doubt = int(request_data.get("doubt", 0))
@@ -98,7 +99,7 @@ class AdminDashboardService:
                 "suggestion": r_suggestion,
                 "complaint": r_complaint,
                 "token_request": r_token,
-            }
+            },
         }
 
         return {
@@ -121,7 +122,9 @@ class AdminDashboardService:
         page: int,
         page_size: int,
     ) -> Dict[str, Any]:
-        logger.info(f"Listing unified requests. Status: {status}, Category: {category}, Page: {page}")
+        logger.info(
+            f"Listing unified requests. Status: {status}, Category: {category}, Page: {page}"
+        )
         status_enum = None
         if status:
             try:
@@ -148,13 +151,33 @@ class AdminDashboardService:
 
         for idx, row in enumerate(rows):
             if isinstance(row, dict):
-                user_email = row.get("user_email")
-                if user_email and "deleted.local" in user_email:
-                    row["email"] = user_email
+                raw_email = row.get("user_email") or row.get("email")
+                if not raw_email:
+                    continue
+                if "deleted.local" in raw_email:
+                    row["email"] = raw_email
+                    row["user_email"] = raw_email
+                else:
+                    masked = anonymize_email(raw_email)
+                    row["email"] = masked
+                    row["user_email"] = masked
             else:
-                user_email = getattr(row, "user_email", None)
-                if user_email and "deleted.local" in user_email:
-                    setattr(row, "email", user_email)
+                raw_email = getattr(row, "user_email", None) or getattr(
+                    row, "email", None
+                )
+                if not raw_email:
+                    continue
+                if "deleted.local" in raw_email:
+                    if hasattr(row, "email"):
+                        setattr(row, "email", raw_email)
+                    if hasattr(row, "user_email"):
+                        setattr(row, "user_email", raw_email)
+                else:
+                    masked = anonymize_email(raw_email)
+                    if hasattr(row, "email"):
+                        setattr(row, "email", masked)
+                    if hasattr(row, "user_email"):
+                        setattr(row, "user_email", masked)
 
         total_pages = ceil(total / page_size) if page_size > 0 else 1
 
@@ -183,31 +206,61 @@ class AdminDashboardService:
                 status_str = str(status_value)
 
             if user_email and "deleted.local" in user_email and status_str == "open":
-                logger.info(f"Auto-closing request {request_id} for deleted user.")
+                logger.info(
+                    f"Auto-closing request {request_id} for deleted user."
+                )
                 now = datetime.now(timezone.utc)
                 if req_type == "contact":
-                    closed = await self._admin_repo.close_contact_request_for_deleted_user(
-                        request_id=request_id,
-                        closed_at=now,
+                    closed = (
+                        await self._admin_repo.close_contact_request_for_deleted_user(
+                            request_id=request_id,
+                            closed_at=now,
+                        )
                     )
                 else:
-                    closed = await self._admin_repo.close_token_request_for_deleted_user(
-                        request_id=request_id,
-                        closed_at=now,
+                    closed = (
+                        await self._admin_repo.close_token_request_for_deleted_user(
+                            request_id=request_id,
+                            closed_at=now,
+                        )
                     )
                 if closed:
                     await self._session.commit()
                     detail = await self._admin_repo.get_unified_detail(request_id)
 
-            if isinstance(detail, dict):
-                user_email = detail.get("user_email")
-                if user_email and "deleted.local" in user_email:
-                    detail["email"] = user_email
+        if isinstance(detail, dict):
+            raw_email = detail.get("user_email") or detail.get("email")
+            if raw_email:
+                if "deleted.local" in raw_email:
+                    detail["email"] = raw_email
+                    detail["user_email"] = raw_email
+                else:
+                    masked = anonymize_email(raw_email)
+                    detail["email"] = masked
+                    detail["user_email"] = masked
+        else:
+            raw_email = getattr(detail, "user_email", None) or getattr(
+                detail, "email", None
+            )
+            if raw_email:
+                if "deleted.local" in raw_email:
+                    if hasattr(detail, "email"):
+                        setattr(detail, "email", raw_email)
+                    if hasattr(detail, "user_email"):
+                        setattr(detail, "user_email", raw_email)
+                else:
+                    masked = anonymize_email(raw_email)
+                    if hasattr(detail, "email"):
+                        setattr(detail, "email", masked)
+                    if hasattr(detail, "user_email"):
+                        setattr(detail, "user_email", masked)
 
         return detail
 
     async def close_contact_request_for_deleted_user(self, request_id: UUID) -> bool:
-        logger.info(f"Manually closing contact request {request_id} for deleted user")
+        logger.info(
+            f"Manually closing contact request {request_id} for deleted user"
+        )
         now = datetime.now(timezone.utc)
         closed = await self._admin_repo.close_contact_request_for_deleted_user(
             request_id=request_id,
@@ -218,7 +271,9 @@ class AdminDashboardService:
         return closed
 
     async def close_token_request_for_deleted_user(self, request_id: UUID) -> bool:
-        logger.info(f"Manually closing token request {request_id} for deleted user")
+        logger.info(
+            f"Manually closing token request {request_id} for deleted user"
+        )
         now = datetime.now(timezone.utc)
         closed = await self._admin_repo.close_token_request_for_deleted_user(
             request_id=request_id,

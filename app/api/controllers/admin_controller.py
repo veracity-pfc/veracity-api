@@ -26,6 +26,8 @@ from app.schemas.contact_request import (
 from app.services.admin_service import AdminDashboardService
 from app.services.api_token_service import ApiTokenService
 from app.services.contact_service import ContactService
+from app.services.utils.validation_utils import anonymize_email
+
 
 router = APIRouter(prefix="/v1/administration", tags=["admin"])
 
@@ -341,7 +343,7 @@ async def list_tokens(
             created_at=row.created_at,
             expires_at=row.expires_at,
             last_used_at=row.last_used_at,
-            user_email=row.user.email,
+            user_email=anonymize_email(row.user.email),
         )
         for row in page_rows
     ]

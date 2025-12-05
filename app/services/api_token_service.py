@@ -80,7 +80,7 @@ class ApiTokenService:
             "last_used_at": token.last_used_at,
             "revoked_at": token.revoked_at,
             "revoked_reason": token.revoked_reason,
-            "user_email": token.user.email if token.user else None,
+            "user_email": anonymize_email(token.user.email) if token.user else None,
             "analysis_type": "token",
         }
 
