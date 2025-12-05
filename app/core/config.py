@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     http_timeout: float = 6.0
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(extra="ignore")
 
 
 settings = Settings()

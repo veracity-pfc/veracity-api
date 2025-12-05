@@ -18,3 +18,4 @@ app/api/controllers/__pycache__/analysis_controller.cpython-313.pyc
 app/api/controllers/__pycache__/admin_controller.cpython-313.pyc
 app/api/__pycache__/deps.cpython-313.pyc
 app/__pycache__/main.cpython-313.pyc
+env.txt
