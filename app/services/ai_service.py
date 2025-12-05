@@ -17,6 +17,7 @@ from app.core.constants import GENERIC_ANALYSIS_ERROR, HAS_DIGIT_RE, QUERY_DOMAI
 
 logger = logging.getLogger("veracity.ai_service")
 
+
 @dataclass(slots=True)
 class URLSignals:
     url: str
@@ -110,10 +111,11 @@ def _build_prompt(gsb_json: Dict[str, Any], sig: URLSignals) -> str:
         "Instruções:\n"
         "- Avalie se o endereço tenta se passar por outro pela forma do domínio e subdomínios.\n"
         "- Mesmo sem alertas no GSB, considere: TLD desconhecido, punycode, muitos subdomínios, hífens/números, caminho longo e uso de HTTP sem HTTPS.\n"
-        "- Se o campo \"is_hosting_provider\" for verdadeiro, você DEVE classificar como \"Suspeito\", "
-        "explicando que empresas legítimas normalmente usam domínios próprios (como \"empresa.com\" ou "
-        "\"empresa.com.br\") em vez de subdomínios genéricos em provedores como Vercel, Render, Netlify, "
-        "Firebase ou similares.\n"
+        "- Se o campo \"is_hosting_provider\" for verdadeiro, avalie o host: se parecer o site ou painel oficial do próprio provedor "
+        "(por exemplo, \"dashboard.render.com\", \"render.com\", \"vercel.com\", \"netlify.com\"), e não houver outros sinais claros de golpe, "
+        "você pode classificar como \"Seguro\", apenas explicando que é um serviço de hospedagem.\n"
+        "- Para subdomínios genéricos de hospedagem usados por projetos (como \"meusite.onrender.com\", \"app.netlify.app\", "
+        "\"minhaapp.vercel.app\"), em geral classifique no mínimo como \"Suspeito\", explicando que criminosos costumam abusar desse tipo de endereço.\n"
         "- Se o campo \"query_domain_mismatch\" for verdadeiro, considere a URL no mínimo como \"Suspeito\", "
         "explicando que o endereço real é de um domínio estranho usando o nome de outro site dentro da URL.\n"
         "- Explique em UM parágrafo curto, SEM termos técnicos; foque no que o usuário leigo precisa saber e por quê.\n"
@@ -278,7 +280,15 @@ class AIService:
                 "explanation": " ".join(explanation.split()),
                 "recommendations": recommendations,
             }
-            if sig.is_hosting_provider:
+            official_hosts = {
+                "render.com",
+                "dashboard.render.com",
+                "vercel.com",
+                "netlify.com",
+                "www.netlify.com",
+            }
+            is_official_host = sig.host in official_hosts
+            if sig.is_hosting_provider and not is_official_host:
                 current_cls = out_clean["classification"]
                 if not current_cls or current_cls.lower().startswith("segur"):
                     out_clean["classification"] = "Suspeito"
