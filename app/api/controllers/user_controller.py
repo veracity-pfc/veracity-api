@@ -197,7 +197,7 @@ async def send_reactivate_code(
 ):
     service = UserService(session)
     try:
-        await service.send_reactivation_code_flow(payload.email, request)
+        await service.request_reactivation_code(payload.email, request)
         return {"detail": "Código de reativação enviado com sucesso."}
     except ValueError as exc:
         raise HTTPException(
@@ -217,7 +217,7 @@ async def confirm_reactivate_code(
 
     service = UserService(session)
     try:
-        await service.confirm_reactivation_code_flow(
+        await service.confirm_reactivation_code(
             email,
             code,
             request,

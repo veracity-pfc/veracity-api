@@ -423,15 +423,6 @@ class UserService:
     def _build_code_secret(self, email: str, step: int) -> bytes:
         return f"{email}:{step}".encode("utf-8")
 
-    def _generate_code(self, email: str) -> str:
-        step = self._time_step()
-        secret = settings.jwt_secret.encode("utf-8")
-        msg = self._build_code_secret(email, step)
-        digest = hmac.new(secret, msg, hashlib.sha256).digest()
-        value = int.from_bytes(digest[:4], "big")
-        value = value % 1_000_000
-        return f"{value:06d}"
-
     def _validate_code(self, email: str, code: str) -> bool:
         if not CODE_RE.fullmatch(code):
             return False
@@ -460,9 +451,14 @@ class UserService:
         if user.status == UserStatus.active:
             raise ValueError("Conta já está ativa.")
 
-        code = self._generate_code(email)
-        html_body = reactivate_account_email_html(code)
+        code = self._generate_random_code()
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+
+        await self.users.save_reactivation_code(user, code, expires_at)
+
+        html_body = reactivate_account_email_html(user.name, code)
         await send_email(email, "Código de reativação de conta", html_body)
+
         await self.audit_repo.insert(
             AuditLog,
             user_id=str(user.id),
@@ -470,7 +466,9 @@ class UserService:
             action="user.reactivate.request_code",
             resource="/user/reactivate-account",
             success=True,
-            details={"email": anonymized_email},
+            details={
+                "email": anonymized_email,
+            },
         )
         await self.session.commit()
 
@@ -487,10 +485,19 @@ class UserService:
             raise ValueError("E-mail não encontrado.")
 
         try:
-            if not self._validate_code(email, code):
-                raise ValueError("Código inválido ou expirado.")
-            user.status = UserStatus.active
-            await self.users.update(user)
+            if not user.reactivation_code or not user.reactivation_code_expires_at:
+                raise ValueError("Nenhum código de reativação pendente.")
+
+            now = datetime.now(timezone.utc)
+            if user.reactivation_code_expires_at < now:
+                raise ValueError("Código expirado.")
+
+            if user.reactivation_code != code:
+                raise ValueError("Código inválido.")
+
+            await self.users.reactivate(user)
+            await self.users.clear_reactivation_code(user)
+
             await self.audit_repo.insert(
                 AuditLog,
                 user_id=user.id,
@@ -521,6 +528,32 @@ class UserService:
     def _generate_random_code(self) -> str:
         value = secrets.randbelow(1_000_000)
         return f"{value:06d}"
+    
+    async def validate_reactivation_email(self, raw_email: str, request: Request) -> None:
+        try:
+            email, user_id = await self.validate_email(raw_email)
+            await self.audit_repo.insert(
+                AuditLog,
+                user_id=user_id,
+                actor_ip_hash=ip_hash_from_request(request),
+                action="user.reactivate.validate",
+                resource="user",
+                success=True,
+                details={"email": email},
+            )
+            await self.session.commit()
+        except ValueError as exc:
+            await self.audit_repo.insert(
+                AuditLog,
+                user_id=None,
+                actor_ip_hash=ip_hash_from_request(request),
+                action="user.reactivate.validate",
+                resource="user",
+                success=False,
+                details={"email": raw_email, "error": str(exc)},
+            )
+            await self.session.commit()
+            raise
 
     async def request_email_change(
         self,
