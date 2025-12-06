@@ -321,7 +321,7 @@ class AuthService:
 
         reset = await self.pwd_repo.create(
             user_id=str(user.id),
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
             actor_ip_hash=ip_hash_from_request(request),
         )
 

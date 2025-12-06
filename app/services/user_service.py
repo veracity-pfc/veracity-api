@@ -454,7 +454,7 @@ class UserService:
             raise ValueError("Conta já está ativa.")
 
         code = self._generate_random_code()
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
 
         await self.users.save_reactivation_code(user, code, expires_at)
 
@@ -582,7 +582,7 @@ class UserService:
             raise ValueError("E-mail já está em uso por outra conta.")
 
         code = self._generate_random_code()
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
 
         await self.pending_email_changes.create_or_update(
             user_id=user.id,
@@ -770,3 +770,4 @@ class UserService:
             success=True,
         )
         await self.session.commit()
+        
