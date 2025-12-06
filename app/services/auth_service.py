@@ -309,6 +309,11 @@ class AuthService:
         if not user:
             logger.info(f"Forgot password: User not found for {anonymized_email}")
             raise ValueError("O e-mail informado não está vinculado a nenhuma conta.")
+
+        role_val = getattr(user.role, "value", str(user.role))
+        if str(role_val).lower() == "admin":
+            raise ValueError("Administradores não podem realizar a troca de senha.")
+
         if user.status != UserStatus.active:
             raise ValueError(
                 "A conta vinculada ao e-mail informado está inativa. Reative a conta para poder realizar a troca de senha"
