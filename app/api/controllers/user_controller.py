@@ -147,8 +147,14 @@ async def inactivate_account(
     session: AsyncSession = Depends(get_session),
 ):
     service = UserService(session)
-    await service.inactivate_account(str(user.id))
-    return {"ok": True, "status": "inactive"}
+    try:
+        await service.inactivate_account(str(user.id))
+        return {"ok": True, "status": "inactive"}
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
 
 
 @router.delete("/account")
@@ -157,9 +163,14 @@ async def delete_account(
     session: AsyncSession = Depends(get_session),
 ):
     service = UserService(session)
-    await service.delete_account(str(user.id))
-    return {"ok": True}
-
+    try:
+        await service.delete_account(str(user.id))
+        return {"ok": True}
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
 
 @router.post("/reactivate-account/validate")
 async def validate_reactivate_account(

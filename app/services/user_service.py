@@ -625,10 +625,11 @@ class UserService:
         await self._normalize_and_validate_new_email_for_change(user_id, raw_email)
 
     async def inactivate_account(self, user_id: str) -> None:
-        logger.info(f"Inactivating account for user: {user_id}")
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
+        if self._is_admin(user):
+            raise ValueError("Administradores não podem inativar a própria conta pela plataforma.")
         user.status = UserStatus.inactive
         await self.users.update(user)
         await self._revoke_active_token_for_user_auto(
@@ -696,31 +697,13 @@ class UserService:
             req.decided_at = closed_at
             req.decided_by_admin_id = None
 
-    async def inactivate_account(self, user_id: str) -> None:
-        user = await self.users.get_by_id(user_id)
-        if not user:
-            raise ValueError("Usuário não encontrado.")
-        user.status = UserStatus.inactive
-        await self.users.update(user)
-        await self._revoke_active_token_for_user_auto(
-            user_id=str(user.id),
-            reason="Conta inativada pelo usuário",
-        )
-        await self.audit_repo.insert(
-            AuditLog,
-            user_id=str(user.id),
-            actor_ip_hash=None,
-            action="user.account.inactivate",
-            resource="/v1/user/account",
-            success=True,
-        )
-        await self.session.commit()
-
     async def delete_account(self, user_id: str) -> None:
         logger.warning(f"Deleting account for user: {user_id}")
         user = await self.users.get_by_id(user_id)
         if not user:
             raise ValueError("Usuário não encontrado.")
+        if self._is_admin(user):
+            raise ValueError("Administradores não podem excluir a própria conta pela plataforma.")
         now = datetime.now(timezone.utc)
         user.status = UserStatus.inactive
         suffix = str(user.id)
