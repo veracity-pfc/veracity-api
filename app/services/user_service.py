@@ -30,6 +30,7 @@ from app.domain.enums import (
 from app.domain.user_model import User
 from app.repositories.api_token_repository import ApiTokenRepository
 from app.repositories.audit_repository import AuditRepository
+from app.repositories.pending_email_change_repository import PendingEmailChangeRepository
 from app.repositories.user_repository import UserRepository
 from app.services.utils.email_utils import (
     email_change_email_html,
@@ -52,6 +53,7 @@ class UserService:
         self.users = UserRepository(session)
         self.audit_repo = AuditRepository(session)
         self.tokens = ApiTokenRepository(session)
+        self.pending_email_changes = PendingEmailChangeRepository(session)
 
     async def _count_web_analyses(
         self,
@@ -528,7 +530,7 @@ class UserService:
     def _generate_random_code(self) -> str:
         value = secrets.randbelow(1_000_000)
         return f"{value:06d}"
-    
+
     async def validate_reactivation_email(self, raw_email: str, request: Request) -> None:
         try:
             email, user_id = await self.validate_email(raw_email)
@@ -572,12 +574,24 @@ class UserService:
             user_id,
             raw_email,
         )
+        email = normalize_email(email)
         anonymized_email = anonymize_email(email)
+
+        existing_pending_target = await self.pending_email_changes.get_by_new_email(email)
+        if existing_pending_target and str(existing_pending_target.user_id) != str(user.id):
+            raise ValueError("E-mail já está em uso por outra conta.")
 
         code = self._generate_random_code()
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
-        await self.users.set_email_change_code(user.id, email, code, expires_at)
-        html_body = email_change_email_html(code, email)
+
+        await self.pending_email_changes.create_or_update(
+            user_id=user.id,
+            new_email=email,
+            token=code,
+            expires_at=expires_at,
+        )
+
+        html_body = email_change_email_html(user.name, email, code)
         await send_email(email, "Confirmação de alteração de e-mail", html_body)
         await self.audit_repo.insert(
             AuditLog,
@@ -602,27 +616,26 @@ class UserService:
             raise ValueError("Usuário não encontrado.")
         if self._is_admin(user):
             raise ValueError("Administradores não podem alterar dados do perfil.")
-        if (
-            not user.pending_email
-            or not user.pending_email_code
-            or not user.pending_email_expires_at
-        ):
+
+        pending = await self.pending_email_changes.get_by_user_id(user.id)
+        if not pending:
             raise ValueError("Nenhuma alteração de e-mail pendente.")
-        if user.pending_email_expires_at < datetime.now(timezone.utc):
+
+        now = datetime.now(timezone.utc)
+        if pending.expires_at < now:
+            await self.pending_email_changes.delete_for_user(user.id)
             raise ValueError("Código expirado.")
-        if user.pending_email_code != code:
+        if pending.token != code:
             raise ValueError("Código inválido.")
 
-        new_email = user.pending_email
+        new_email = normalize_email(pending.new_email)
         anonymized_email = anonymize_email(new_email)
         await self._ensure_unique_email(new_email)
 
         user.email = new_email
-        user.pending_email = None
-        user.pending_email_code = None
-        user.pending_email_expires_at = None
-
         await self.users.update(user)
+        await self.pending_email_changes.delete_for_user(user.id)
+
         await self.audit_repo.insert(
             AuditLog,
             user_id=str(user.id),
