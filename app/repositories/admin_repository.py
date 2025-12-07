@@ -265,7 +265,7 @@ class AdminRepository:
             return False
         user = contact.user
         email = user.email if user else None
-        if not email or "deleted.local" not in email:
+        if not email or "deleted.com" not in email:
             return False
         if contact.status != ContactStatus.open:
             return False
@@ -286,7 +286,7 @@ class AdminRepository:
             return False
         user = token_req.user
         email = user.email if user else None
-        if not email or "deleted.local" not in email:
+        if not email or "deleted.com" not in email:
             return False
         if token_req.status != ApiTokenRequestStatus.open:
             return False

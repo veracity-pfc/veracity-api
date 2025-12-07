@@ -753,7 +753,7 @@ class UserService:
         now = datetime.now(timezone.utc)
         user.status = UserStatus.inactive
         suffix = str(user.id)
-        user.email = f"deleted+{suffix}@.deleted.local.com"
+        user.email = f"{suffix}@deleted.com"
         user.name = "Conta excluída"
         await self.users.update(user)
         await self._close_requests_for_deleted_user(user=user, closed_at=now)

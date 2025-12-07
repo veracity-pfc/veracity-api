@@ -133,7 +133,7 @@ class ContactService:
         if req.user is not None and getattr(req.user, "email", None):
             user_email = req.user.email or ""
 
-        is_deleted_user = "deleted.local" in user_email
+        is_deleted_user = "deleted.com" in user_email
 
         if is_deleted_user:
             logger.info(f"Closing request {request_id} automatically (deleted user)")

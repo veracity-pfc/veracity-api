@@ -154,7 +154,7 @@ class AdminDashboardService:
                 raw_email = row.get("user_email") or row.get("email")
                 if not raw_email:
                     continue
-                if "deleted.local" in raw_email:
+                if "deleted.com" in raw_email:
                     row["email"] = raw_email
                     row["user_email"] = raw_email
                 else:
@@ -167,7 +167,7 @@ class AdminDashboardService:
                 )
                 if not raw_email:
                     continue
-                if "deleted.local" in raw_email:
+                if "deleted.com" in raw_email:
                     if hasattr(row, "email"):
                         setattr(row, "email", raw_email)
                     if hasattr(row, "user_email"):
@@ -205,7 +205,7 @@ class AdminDashboardService:
             else:
                 status_str = str(status_value)
 
-            if user_email and "deleted.local" in user_email and status_str == "open":
+            if user_email and "deleted.com" in user_email and status_str == "open":
                 logger.info(
                     f"Auto-closing request {request_id} for deleted user."
                 )
@@ -231,7 +231,7 @@ class AdminDashboardService:
         if isinstance(detail, dict):
             raw_email = detail.get("user_email") or detail.get("email")
             if raw_email:
-                if "deleted.local" in raw_email:
+                if "deleted.com" in raw_email:
                     detail["email"] = raw_email
                     detail["user_email"] = raw_email
                 else:
@@ -243,7 +243,7 @@ class AdminDashboardService:
                 detail, "email", None
             )
             if raw_email:
-                if "deleted.local" in raw_email:
+                if "deleted.com" in raw_email:
                     if hasattr(detail, "email"):
                         setattr(detail, "email", raw_email)
                     if hasattr(detail, "user_email"):
