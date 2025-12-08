@@ -174,7 +174,7 @@ class AdminRepository:
             )
 
         if category:
-            if category == "Solicitação de token de API":
+            if category == "token_request":
                 q_contacts = q_contacts.where(literal(False))
             else:
                 q_contacts = q_contacts.where(cast(ContactRequest.category, String) == category)
