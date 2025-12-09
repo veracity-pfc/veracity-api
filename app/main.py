@@ -64,8 +64,8 @@ app = FastAPI(
 
 _env_origins = os.getenv(
     "ALLOWED_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173",
 )
+
 ALLOWED_ORIGINS = [origin.strip() for origin in _env_origins.split(",") if origin.strip()]
 
 app.add_middleware(
