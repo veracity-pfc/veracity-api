@@ -12,6 +12,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.database import engine
 from app.core.security import pwd_context
+from app.core.config import settings
+
 from app.api.controllers import (
     admin_controller,
     analysis_controller,
@@ -41,8 +43,8 @@ logging.getLogger("httpcore").propagate = False
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        hashed = pwd_context.hash("warmup@123!")
-        pwd_context.verify("warmup@123!", hashed)
+        hashed = pwd_context.hash(settings.lifespan_password)
+        pwd_context.verify(settings.lifespan_password, hashed)
         checkpw(b"warmup", hashpw(b"warmup", gensalt()))
     except Exception:
         pass

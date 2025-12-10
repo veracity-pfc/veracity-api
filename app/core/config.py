@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     anon_image_limit: int = Field(..., alias="ANON_IMAGE_ANALYSIS_LIMIT")
     user_url_limit: int = Field(..., alias="USER_URL_ANALYSIS_LIMIT")
     user_image_limit: int = Field(..., alias="USER_IMAGE_ANALYSIS_LIMIT")
+    
+    lifespan_password: str = Field(..., alias="LIFESPAN_PASSWORD")
 
     http_timeout: float = 6.0
 
