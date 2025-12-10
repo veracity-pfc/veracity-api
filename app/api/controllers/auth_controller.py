@@ -4,8 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from jose import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_session
+from app.domain.user_model import User
 from app.schemas.auth import (
     ForgotPasswordIn,
     LogIn,
@@ -164,13 +166,16 @@ async def reset_password(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
-@router.post("/logout", response_model=OkOut)
+@router.post("/logout")
 async def logout(
     request: Request,
     response: Response,
+    current_user: User = Depends(get_current_user), 
     session: AsyncSession = Depends(get_session),
 ):
     service = AuthService(session)
     await service.logout(request)
+    
     response.delete_cookie(key="access_token", httponly=True, secure=True, samesite="lax")
-    return OkOut()
+    
+    return {"message": "Sessão encerrada com sucesso"}
