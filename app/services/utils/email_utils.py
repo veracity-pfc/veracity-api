@@ -181,13 +181,14 @@ def email_change_email_html(name: str, new_email: str, code: str) -> str:
 <html>
   <body style="font-family:Arial,sans-serif;background:#0b1211;padding:24px;color:#eef2f1">
     <div style="max-width:520px;margin:0 auto;background:#0e1b19;border-radius:12px;padding:24px">
-      <h2 style="margin:0 0 8px; color:#ffffff;">Confirmar alteração de e-mail</h2>
-      <p style="opacity:.9; color:#ffffff;">Olá, <b>{safe_name}</b>. Você solicitou alterar o e-mail da sua conta Veracity para <b>{safe_email}</b>.</p>
-      <p style="opacity:.9; color:#ffffff;">Para confirmar a alteração, informe o código abaixo na plataforma.</p>
+      <h2 style="margin:0 0 8px; color:#ffffff;">Código de Verificação</h2>
+      <p style="opacity:.9; color:#ffffff;">Olá, <b>{safe_name}</b>.</p>
+      <p style="opacity:.9; color:#ffffff;">Você autorizou a troca de e-mail para <b>{safe_email}</b>.</p>
+      <p style="opacity:.9; color:#ffffff;">Para concluir o processo e atualizar seu perfil, informe o código abaixo:</p>
       <div style="margin:16px 0;padding:12px 0;text-align:center;font-size:24px;letter-spacing:6px;font-weight:700;background:#051513;border-radius:10px; color:#ffffff;">
         {safe_code}
       </div>
-      <p style="opacity:.8; color:#ffffff;">O código é válido por poucos minutos. Se você não solicitou esta alteração, ignore este e-mail.</p>
+      <p style="opacity:.8; color:#ffffff;">Este código expira em 10 minutos.</p>
     </div>
   </body>
 </html>
@@ -280,6 +281,31 @@ def build_contact_reply_email_html(subject: str, original_message: str, reply: s
       </tr>
     </table>
 
+  </body>
+</html>
+    """.strip()
+
+
+def email_change_approval_link_email_html(name: str, new_email: str, link: str) -> str:
+    safe_name = html.escape(name or "")
+    safe_new = html.escape(new_email or "")
+    safe_link = html.escape(link)
+    return f"""
+<!doctype html>
+<html>
+  <body style="font-family:Arial,sans-serif;background:#0b1211;padding:24px;color:#eef2f1">
+    <div style="max-width:520px;margin:0 auto;background:#0e1b19;border-radius:12px;padding:24px">
+      <h2 style="margin:0 0 8px; color:#ffffff;">Solicitação de troca de e-mail</h2>
+      <p style="opacity:.9; color:#ffffff;">Olá, <b>{safe_name}</b>.</p>
+      <p style="opacity:.9; color:#ffffff;">Recebemos uma solicitação para alterar o e-mail da sua conta para: <b>{safe_new}</b>.</p>
+      <p style="opacity:.9; color:#ffffff;">Por segurança, precisamos que você autorize essa alteração clicando no botão abaixo:</p>
+      <p style="margin:24px 0;">
+        <a href="{safe_link}" style="display:inline-block;background:#1c6a58;color:#ffffff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px;">
+          Autorizar troca de e-mail
+        </a>
+      </p>
+      <p style="opacity:.8; color:#ffffff;">Se não foi você quem solicitou, <b>não clique no botão</b>. Sua conta permanecerá segura com o e-mail atual.</p>
+    </div>
   </body>
 </html>
     """.strip()

@@ -34,6 +34,7 @@ from app.repositories.pending_email_change_repository import PendingEmailChangeR
 from app.repositories.user_repository import UserRepository
 from app.services.utils.email_utils import (
     email_change_email_html,
+    email_change_approval_link_email_html,
     reactivate_account_email_html,
     send_email,
 )
@@ -474,6 +475,146 @@ class UserService:
         )
         await self.session.commit()
 
+    async def request_email_change(
+        self,
+        user_id: str,
+        raw_email: str,
+        request: Request,
+    ) -> None:
+        logger.info(f"User {user_id} requesting email change")
+        user = await self.users.get_by_id(user_id)
+        if not user:
+            raise ValueError("Usuário não encontrado.")
+        if self._is_admin(user):
+            raise ValueError("Administradores não podem alterar dados do perfil.")
+
+        email = await self._normalize_and_validate_new_email_for_change(
+            user_id,
+            raw_email,
+        )
+        email = normalize_email(email)
+        anonymized_email = anonymize_email(email)
+
+        existing_pending_target = await self.pending_email_changes.get_by_new_email(email)
+        if existing_pending_target and str(existing_pending_target.user_id) != str(user.id):
+            raise ValueError("E-mail já está em uso por outra conta.")
+
+        approval_token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+
+        await self.pending_email_changes.create_or_update(
+            user_id=user.id,
+            new_email=email,
+            token=approval_token,
+            expires_at=expires_at,
+        )
+
+        link = f"{settings.frontend_url}/approve-email-change?token={approval_token}"
+        html_body = email_change_approval_link_email_html(user.name, email, link)
+        
+        await send_email(user.email, "Autorize a troca do seu e-mail", html_body)
+        
+        await self.audit_repo.insert(
+            AuditLog,
+            user_id=str(user.id),
+            actor_ip_hash=ip_hash_from_request(request),
+            action="user.email_change.request_link",
+            resource="/v1/user/profile/email-change/request",
+            success=True,
+            details={"new_email_target": anonymized_email},
+        )
+        await self.session.commit()
+
+    async def approve_email_change_request(
+        self,
+        user_id: str,
+        token: str,
+        request: Request,
+    ) -> str: 
+        logger.info(f"User {user_id} approving email change via link")
+        user = await self.users.get_by_id(user_id)
+        if not user:
+            raise ValueError("Usuário não encontrado.")
+
+        pending = await self.pending_email_changes.get_by_user_id(user.id)
+        if not pending:
+            raise ValueError("Solicitação não encontrada.")
+
+        now = datetime.now(timezone.utc)
+        if pending.expires_at < now:
+            await self.pending_email_changes.delete_for_user(user.id)
+            raise ValueError("O link de autorização expirou. Inicie o processo novamente.")
+        
+        if pending.token != token:
+            raise ValueError("Token de autorização inválido.")
+
+        verification_code = self._generate_random_code()
+        
+        await self.pending_email_changes.create_or_update(
+            user_id=user.id,
+            new_email=pending.new_email,
+            token=verification_code,
+            expires_at=now + timedelta(minutes=10)
+        )
+
+        html_body = email_change_email_html(user.name, pending.new_email, verification_code)
+        await send_email(pending.new_email, "Código de verificação de e-mail", html_body)
+
+        await self.audit_repo.insert(
+            AuditLog,
+            user_id=str(user.id),
+            actor_ip_hash=ip_hash_from_request(request),
+            action="user.email_change.approved_link",
+            resource="/v1/user/profile/email-change/approve",
+            success=True,
+            details={"new_email": anonymize_email(pending.new_email)},
+        )
+        await self.session.commit()
+        
+        return pending.new_email 
+
+    async def confirm_email_change(
+        self,
+        user_id: str,
+        code: str,
+        request: Request,
+    ) -> str:
+        logger.info(f"User {user_id} confirming email change code")
+        user = await self.users.get_by_id(user_id)
+        if not user:
+            raise ValueError("Usuário não encontrado.")
+
+        pending = await self.pending_email_changes.get_by_user_id(user.id)
+        if not pending:
+            raise ValueError("Nenhuma alteração pendente.")
+
+        now = datetime.now(timezone.utc)
+        if pending.expires_at < now:
+            raise ValueError("Código expirado.")
+        
+        if pending.token != code:
+            raise ValueError("Código inválido.")
+
+        new_email = normalize_email(pending.new_email)
+        anonymized_new_email = anonymize_email(new_email)
+        await self._ensure_unique_email(new_email)
+        
+        user.email = new_email
+        await self.users.update(user)
+        await self.pending_email_changes.delete_for_user(user.id)
+
+        await self.audit_repo.insert(
+            AuditLog,
+            user_id=str(user.id),
+            actor_ip_hash=ip_hash_from_request(request),
+            action="user.email_change.confirm",
+            resource="/v1/user/profile/email-change/confirm",
+            success=True,
+            details={"new_email": anonymized_new_email},
+        )
+        await self.session.commit()
+        return user.email
+
     async def confirm_reactivation_code(
         self,
         raw_email: str,
@@ -556,97 +697,6 @@ class UserService:
             )
             await self.session.commit()
             raise
-
-    async def request_email_change(
-        self,
-        user_id: str,
-        raw_email: str,
-        request: Request,
-    ) -> None:
-        logger.info(f"User {user_id} requesting email change")
-        user = await self.users.get_by_id(user_id)
-        if not user:
-            raise ValueError("Usuário não encontrado.")
-        if self._is_admin(user):
-            raise ValueError("Administradores não podem alterar dados do perfil.")
-
-        email = await self._normalize_and_validate_new_email_for_change(
-            user_id,
-            raw_email,
-        )
-        email = normalize_email(email)
-        anonymized_email = anonymize_email(email)
-
-        existing_pending_target = await self.pending_email_changes.get_by_new_email(email)
-        if existing_pending_target and str(existing_pending_target.user_id) != str(user.id):
-            raise ValueError("E-mail já está em uso por outra conta.")
-
-        code = self._generate_random_code()
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
-
-        await self.pending_email_changes.create_or_update(
-            user_id=user.id,
-            new_email=email,
-            token=code,
-            expires_at=expires_at,
-        )
-
-        html_body = email_change_email_html(user.name, email, code)
-        await send_email(email, "Confirmação de alteração de e-mail", html_body)
-        await self.audit_repo.insert(
-            AuditLog,
-            user_id=str(user.id),
-            actor_ip_hash=ip_hash_from_request(request),
-            action="user.email_change.request",
-            resource="/v1/user/profile/email-change/request",
-            success=True,
-            details={"new_email": anonymized_email},
-        )
-        await self.session.commit()
-
-    async def confirm_email_change(
-        self,
-        user_id: str,
-        code: str,
-        request: Request,
-    ) -> str:
-        logger.info(f"User {user_id} confirming email change")
-        user = await self.users.get_by_id(user_id)
-        if not user:
-            raise ValueError("Usuário não encontrado.")
-        if self._is_admin(user):
-            raise ValueError("Administradores não podem alterar dados do perfil.")
-
-        pending = await self.pending_email_changes.get_by_user_id(user.id)
-        if not pending:
-            raise ValueError("Nenhuma alteração de e-mail pendente.")
-
-        now = datetime.now(timezone.utc)
-        if pending.expires_at < now:
-            await self.pending_email_changes.delete_for_user(user.id)
-            raise ValueError("Código expirado.")
-        if pending.token != code:
-            raise ValueError("Código inválido.")
-
-        new_email = normalize_email(pending.new_email)
-        anonymized_email = anonymize_email(new_email)
-        await self._ensure_unique_email(new_email)
-
-        user.email = new_email
-        await self.users.update(user)
-        await self.pending_email_changes.delete_for_user(user.id)
-
-        await self.audit_repo.insert(
-            AuditLog,
-            user_id=str(user.id),
-            actor_ip_hash=ip_hash_from_request(request),
-            action="user.email_change.confirm",
-            resource="/v1/user/profile/email-change/confirm",
-            success=True,
-            details={"new_email": anonymized_email},
-        )
-        await self.session.commit()
-        return user.email
 
     def _is_active_user(self, user: User) -> bool:
         status_value = getattr(user, "status", None)
@@ -770,4 +820,3 @@ class UserService:
             success=True,
         )
         await self.session.commit()
-        

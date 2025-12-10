@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -110,6 +110,7 @@ async def request_email_change(
         if validate_only:
             await service.validate_email_change(str(user.id), new_email)
             return {"ok": True, "requires_verification": True}
+        
         await service.request_email_change(str(user.id), new_email, request)
         return {"ok": True, "requires_verification": True}
     except ValueError as exc:
@@ -119,9 +120,28 @@ async def request_email_change(
         )
 
 
+@router.post("/profile/email-change/approve")
+async def approve_email_change(
+    request: Request,
+    payload: dict = Body(...),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    token = (payload.get("token") or "").strip()
+    service = UserService(session)
+    try:
+        target_email = await service.approve_email_change_request(str(user.id), token, request)
+        return {"ok": True, "email": target_email}
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
 @router.post("/profile/email-change/confirm")
 async def confirm_email_change(
     request: Request,
+    response: Response,
     payload: dict = Body(...),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -130,6 +150,14 @@ async def confirm_email_change(
     service = UserService(session)
     try:
         new_email = await service.confirm_email_change(str(user.id), code, request)
+        
+        response.delete_cookie(
+            key="access_token", 
+            httponly=True, 
+            secure=True, 
+            samesite="lax"
+        )
+        
         return {"ok": True, "email": new_email}
     except ValueError as exc:
         raise HTTPException(
@@ -171,6 +199,7 @@ async def delete_account(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
+
 
 @router.post("/reactivate-account/validate")
 async def validate_reactivate_account(
