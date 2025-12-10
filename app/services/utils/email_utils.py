@@ -1,16 +1,21 @@
 from __future__ import annotations
-
 import html
-
 import httpx
-
+from zoneinfo import ZoneInfo
 from app.core.config import settings
 from app.core.constants import RESEND_API
 
-
 class EmailError(RuntimeError):
     pass
-
+  
+def _fmt_br(dt) -> str:
+    if not dt:
+        return "—"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+    
+    local_dt = dt.astimezone(ZoneInfo("America/Sao_Paulo"))
+    return local_dt.strftime("%d/%m/%Y às %H:%M")
 
 async def send_email(to: str, subject: str, html_body: str) -> None:
     payload = {
@@ -53,7 +58,7 @@ def verification_email_html(name: str, code: str) -> str:
 
 
 def build_api_token_approved_email_html(expires_at) -> str:
-    expires_fmt = expires_at.strftime("%d/%m/%Y às %H:%M")
+    expires_fmt = _fmt_br(expires_at)
     return f"""
 <!doctype html>
 <html>
@@ -101,7 +106,7 @@ def build_api_token_rejected_email_html(reason: str) -> str:
 
 
 def build_api_token_expired_email_html(expires_at) -> str:
-    expires_fmt = expires_at.strftime("%d/%m/%Y às %H:%M")
+    expires_fmt = _fmt_br(expires_at)
     return f"""
 <!doctype html>
 <html>
@@ -121,7 +126,7 @@ def build_api_token_expired_email_html(expires_at) -> str:
 
 
 def build_api_token_revoked_email_html(expires_at, reason: str | None) -> str:
-    expires_fmt = expires_at.strftime("%d/%m/%Y às %H:%M")
+    expires_fmt = _fmt_br(expires_at)
     reason_text = html.escape(reason or "Motivo não informado.")
     return f"""
 <!doctype html>
