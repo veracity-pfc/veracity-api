@@ -13,8 +13,6 @@ from app.core.database import get_session
 from app.domain.enums import UserRole, UserStatus
 from app.domain.user_model import User
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
-
 
 async def get_db(session: AsyncSession = Depends(get_session)) -> AsyncSession:
     return session
@@ -48,6 +46,7 @@ def _decode_token(token: str) -> str | None:
         return None
     return uid
 
+
 def get_actor_identifier(request: Request) -> str | None:
     if not request:
         return None
@@ -57,9 +56,18 @@ def get_actor_identifier(request: Request) -> str | None:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+async def oauth2_scheme(request: Request) -> str | None:
+    token = request.cookies.get("access_token")
+    if not token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+    return token
+
+
 async def get_current_user(
     request: Request,
-    token: str = Depends(oauth2_scheme),
+    token: str | None = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_db),
 ) -> User:
     cred_exc = HTTPException(
@@ -67,6 +75,9 @@ async def get_current_user(
         detail="Credenciais inválidas",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    if not token:
+        raise cred_exc
 
     uid = _decode_token(token)
     if uid is None:
@@ -87,12 +98,9 @@ async def get_current_user(
     return user
 
 
-oauth2_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
-
-
 async def get_optional_user(
     request: Request,
-    token: str | None = Depends(oauth2_optional),
+    token: str | None = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_db),
 ) -> User | None:
     if not token:

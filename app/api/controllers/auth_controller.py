@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from jose import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,7 @@ router = APIRouter(prefix="/v1/auth", tags=["auth"])
 async def login(
     data: LogIn,
     request: Request,
+    response: Response,
     session: AsyncSession = Depends(get_session),
 ):
     service = AuthService(session)
@@ -35,6 +36,16 @@ async def login(
             algorithms=[settings.jwt_alg],
         )
         role = payload.get("role", "user")
+
+        response.set_cookie(
+            key="access_token",
+            value=token,
+            httponly=True,
+            secure=True, 
+            samesite="lax",
+            max_age=600 
+        )
+
         return TokenOut(access_token=token, role=role)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
@@ -69,6 +80,7 @@ async def register(
 async def verify_email(
     data: VerifyEmailIn,
     request: Request,
+    response: Response,
     session: AsyncSession = Depends(get_session),
 ):
     service = AuthService(session)
@@ -80,6 +92,16 @@ async def verify_email(
             algorithms=[settings.jwt_alg],
         )
         role = payload.get("role", "user")
+
+        response.set_cookie(
+            key="access_token",
+            value=token,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=600
+        )
+
         return TokenOut(access_token=token, role=role)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
@@ -145,8 +167,10 @@ async def reset_password(
 @router.post("/logout", response_model=OkOut)
 async def logout(
     request: Request,
+    response: Response,
     session: AsyncSession = Depends(get_session),
 ):
     service = AuthService(session)
     await service.logout(request)
+    response.delete_cookie(key="access_token", httponly=True, secure=True, samesite="lax")
     return OkOut()
