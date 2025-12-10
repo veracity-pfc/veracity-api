@@ -55,7 +55,7 @@ class AuthService:
         payload = {
             "sub": str(user.id),
             "role": user.role.value,
-            "exp": now + timedelta(hours=24),
+            "exp": now + timedelta(minutes=10),
             "iat": now,
         }
         return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_alg)

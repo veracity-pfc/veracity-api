@@ -1,9 +1,9 @@
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any
 import hashlib
 
-from fastapi import Depends, HTTPException, status, Request
-from fastapi.security import OAuth2PasswordBearer
+from fastapi import Depends, HTTPException, status, Request, Response
 from jose import jwt, JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -31,20 +31,15 @@ def ip_hash_from_request(req: Request) -> str | None:
     return sha256(value.encode()).hexdigest()
 
 
-def _decode_token(token: str) -> str | None:
+def _decode_token_payload(token: str) -> dict[str, Any] | None:
     try:
-        payload: dict[str, Any] = jwt.decode(
+        return jwt.decode(
             token,
             settings.jwt_secret,
             algorithms=[settings.jwt_alg],
         )
     except JWTError:
         return None
-
-    uid = payload.get("sub")
-    if not isinstance(uid, str):
-        return None
-    return uid
 
 
 def get_actor_identifier(request: Request) -> str | None:
@@ -67,6 +62,7 @@ async def oauth2_scheme(request: Request) -> str | None:
 
 async def get_current_user(
     request: Request,
+    response: Response, 
     token: str | None = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_db),
 ) -> User:
@@ -79,9 +75,42 @@ async def get_current_user(
     if not token:
         raise cred_exc
 
-    uid = _decode_token(token)
-    if uid is None:
+    payload = _decode_token_payload(token)
+    if payload is None:
         raise cred_exc
+
+    uid = payload.get("sub")
+    if not isinstance(uid, str):
+        raise cred_exc
+
+    exp = payload.get("exp")
+    if exp:
+        now = datetime.now(timezone.utc)
+        remaining_seconds = exp - now.timestamp()
+
+        if remaining_seconds < 300:
+            new_exp = now + timedelta(minutes=10)
+            
+            new_payload = payload.copy()
+            new_payload.update({
+                "exp": new_exp,
+                "iat": now
+            })
+            
+            new_token = jwt.encode(
+                new_payload, 
+                settings.jwt_secret, 
+                algorithm=settings.jwt_alg
+            )
+            
+            response.set_cookie(
+                key="access_token",
+                value=new_token,
+                httponly=True,
+                secure=True,
+                samesite="lax",
+                max_age=600  
+            )
 
     result = await session.execute(select(User).where(User.id == uid))
     user = result.scalar_one_or_none()
@@ -106,8 +135,12 @@ async def get_optional_user(
     if not token:
         return None
 
-    uid = _decode_token(token)
-    if uid is None:
+    payload = _decode_token_payload(token)
+    if payload is None:
+        return None
+    
+    uid = payload.get("sub")
+    if not isinstance(uid, str):
         return None
 
     result = await session.execute(select(User).where(User.id == uid))
